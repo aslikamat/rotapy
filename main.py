@@ -6,60 +6,64 @@ import time
 
 # 1. Tarayıcı Ayarları
 chrome_options = Options()
-# chrome_options.add_argument("--headless") 
+# chrome_options.add_argument("--headless") # İstersen görünmez çalıştırabilirsin
 
-# 2. Tarayıcıyı Başlat
 driver = webdriver.Chrome(options=chrome_options)
-
-# Verileri biriktireceğimiz ana liste
 tum_etkinlikler = []
 
 try:
     url = 'https://www.biletix.com/performance/5SK01/001/TURKIYE/tr'
-    print("Sayfa yükleniyor, lütfen bekleyin...")
-    
+    print("Sayfa yükleniyor...")
     driver.get(url)
-    time.sleep(7) 
+    time.sleep(5) # Sayfanın tam yüklenmesi için bekliyoruz
 
-    # 4. Sayfa Kaynağını Al ve BeautifulSoup ile İşle
     html_icerigi = driver.page_source
     soup = bs(html_icerigi, 'html.parser')
 
-    # --- VERİ ÇEKME VE DICTIONARY OLUŞTURMA ---
+    # --- HASSAS VERİ ÇEKME ---
     try:
-        # Biletix'in yapısına göre seçicileri (class isimlerini) güncelledim
+        # Etkinlik Adı (Genelde h1 içindedir)
         etkinlik_adi = soup.find("h1").text.strip() if soup.find("h1") else "Bulunamadı"
+
+        # Yeni Biletix yapısında tarih ve mekan genelde "performance-header" veya benzeri divlerdedir
+        # Aşağıdaki seçicileri Biletix'in en güncel (2026) yapısına göre revize ettim:
+        tarih = soup.select_one(".event-date, .performance-date, .date").text.strip() if soup.select_one(".event-date, .performance-date, .date") else "Tarih Belirlenmedi"
         
-        # Mekan ve Tarih bilgilerini çekelim (Biletix'te genelde belirli class'lar altındadır)
-        # Not: Sitedeki class isimleri değişirse buraları güncellememiz gerekebilir.
-        tarih = soup.select_one(".event-date").text.strip() if soup.select_one(".event-date") else "Tarih Yok"
-        mekan = soup.select_one(".event-venue").text.strip() if soup.select_one(".event-venue") else "Mekan Yok"
-        
-        # SÖZLÜK (DICTIONARY) BURADA OLUŞUYOR
+        mekan = soup.select_one(".event-venue, .venue-link, #venue-name").text.strip() if soup.select_one(".event-venue, .venue-link, #venue-name") else "Mekan Belirlenmedi"
+
+        # --- KAPASİTE BİLGİSİ ---
+        # Kapasite genelde mekan isminin yanında veya "Mekan Hakkında" kısmında gizlidir.
+        # Eğer sayfada "Kapasite" kelimesi geçiyorsa onu bulmaya çalışalım:
+        kapasite = "Bilgi Yok"
+        sayfa_metni = soup.get_text()
+        if "kapasite" in sayfa_metni.lower():
+            # Basit bir mantıkla kapasite kelimesinden sonraki sayıları yakalamaya çalışabiliriz
+            import re
+            match = re.search(r"kapasite[^\d]*(\d+[\d\s\.]*)", sayfa_metni.lower())
+            if match:
+                kapasite = match.group(1).strip()
+
         veri_sozlugu = {
             "Etkinlik_Adi": etkinlik_adi,
             "Tarih": tarih,
             "Mekan": mekan,
+            "Kapasite": kapasite,
             "URL": url,
-            "Kayit_Zamani": time.ctime() # Verinin ne zaman çekildiğini not etmek iyi bir pratiktir
+            "Kayit_Zamani": time.ctime()
         }
 
-        # Sözlüğü ana listeye ekliyoruz
         tum_etkinlikler.append(veri_sozlugu)
-        print(f"Veri başarıyla çekildi: {etkinlik_adi}")
+        print(f"Başarılı! Çekilen Veri: {etkinlik_adi} | {tarih} | {mekan} | Kapasite: {kapasite}")
 
     except Exception as e:
-        print(f"Veri ayrıştırılırken hata oluştu: {e}")
+        print(f"Veri ayıklanırken bir hata oluştu: {e}")
 
-    # --- PANDAS VE PARQUET KAYDETME ---
+    # --- KAYDETME ---
     if tum_etkinlikler:
         df = pd.DataFrame(tum_etkinlikler)
-        
-        # Dosyayı kaydet
         df.to_parquet('tübitak_etkinlik_verisi.parquet', engine='pyarrow')
-        print("\n--- İŞLEM TAMAM ---")
-        print("Veri 'tübitak_etkinlik_verisi.parquet' dosyasına kaydedildi.")
-        print(df) # Tabloyu terminalde göster
+        print("\nVeri başarıyla kaydedildi.")
+        print(df)
 
 finally:
     driver.quit()
