@@ -1,41 +1,77 @@
 import requests
 import pandas as pd
+import pygeohash as pgh
+from datetime import datetime
+import time
 
-# TomTom Developer Portal'dan aldığın ücretsiz API anahtarı
+# TomTom API Anahtarın
 API_KEY = "9dqoh1Ho4b8xTvYB3tnZCtGEb5qUS2S1"
 
-# Örnek: Beşiktaş Barbaros Bulvarı üzerindeki bir koordinat
-LAT = "41.0422"
-LON = "29.0083"
-
-def get_traffic_density(lat, lon, api_key):
-    # Traffic Flow Segment Data uç noktası
-    # style: 10 (absolute values), zoom: 10 (genel yol ağları)
-    url = f"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?point={lat},{lon}&key={api_key}"
-    
-    response = requests.get(url)
-    
-    if response.status_code == 200:
-        data = response.json()
-        flow_data = data.get('flowSegmentData', {})
-        
-        # Mevcut hız ve serbest akış (trafiksiz) hızı
-        current_speed = flow_data.get('currentSpeed')
-        free_flow_speed = flow_data.get('freeFlowSpeed')
-        
-        # Yoğunluk hesaplama (Hız ne kadar düştüyse trafik o kadar yoğundur)
-        # Oran 1'e yakınsa trafik yok, 0'a yakınsa trafik kilitli.
-        congestion_ratio = current_speed / free_flow_speed if free_flow_speed else 1
-        
-        return {
-            "current_speed_kmh": current_speed,
-            "free_flow_speed_kmh": free_flow_speed,
-            "congestion_ratio": round(congestion_ratio, 2)
-        }
+# Beşiktaş bölgesini temsil eden Geohash listesi (Düğümler)
+BESIKTAS_GEOHASHES = [
+    "sxk9e8", 
+    "sxk9eq", 
+    "sxk9ew", 
+    "sxk9ec", 
+]
+def get_traffic_label(ratio):
+    """Yoğunluk oranına göre sözel yorum satırı belirler."""
+    if ratio >= 0.90:
+        return "Düşük Yoğunluk (Açık Yol)"
+    elif ratio >= 0.70:
+        return "Orta Yoğunluk (Akıcı Trafik)"
+    elif ratio >= 0.40:
+        return "Yüksek Yoğunluk (Yoğun Trafik)"
     else:
-        print(f"Hata Kodu: {response.status_code}")
-        return None
+        return "Çok Yüksek Yoğunluk (Kilit Trafik)"
+    
+def fetch_instant_traffic(geohash_list, api_key):
+    traffic_data_list = []
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    for g_hash in geohash_list:
+        # Geohash'i koordinata çevir
+        lat, lon = pgh.decode(g_hash)
+        
+        url = f"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?point={lat},{lon}&key={api_key}"
+        response = requests.get(url)
+        
+        if response.status_code == 200:
+            data = response.json()
+            flow_data = data.get('flowSegmentData', {})
+            
+            current_speed = flow_data.get('currentSpeed')
+            free_flow_speed = flow_data.get('freeFlowSpeed')
+            
+            # 0'a bölünme hatasını önlemek için kontrol
+            free_flow_speed = free_flow_speed if free_flow_speed else 1
+            congestion_ratio = current_speed / free_flow_speed if current_speed is not None else 1
 
-# Fonksiyonu çalıştır
-traffic_status = get_traffic_density(LAT, LON, API_KEY)
-print("Anlık Trafik Durumu:", traffic_status)
+            # Sözel yorum satırını hesapla
+            traffic_label = get_traffic_label(congestion_ratio)
+
+            traffic_data_list.append({
+                "timestamp": current_time,
+                "geohash": g_hash,
+                "current_speed_kmh": current_speed,
+                "free_flow_speed_kmh": free_flow_speed,
+                "congestion_ratio": round(congestion_ratio, 3),
+                "traffic_condition": traffic_label  # Yeni eklenen sözel yorum sütunu
+            
+            })
+        else:
+            print(f"Hata! Geohash: {g_hash} - Kodu: {response.status_code}")
+            
+        # API sınırlarına takılmamak için her istekte yarım saniye bekle
+        time.sleep(0.5)
+        
+    return pd.DataFrame(traffic_data_list)
+
+# Sadece bir kere çalışır ve anlık veriyi getirir
+df_traffic = fetch_instant_traffic(BESIKTAS_GEOHASHES, API_KEY)
+
+# Terminalde tabloyu görmeye devam etmek istersen bu satır kalabilir
+print(df_traffic)
+
+# Çıktıyı CSV dosyası olarak kaydet
+df_traffic.to_csv("besiktas_anlik_trafik.csv", index=False)
