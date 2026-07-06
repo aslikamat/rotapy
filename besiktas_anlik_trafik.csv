@@ -1,0 +1,5 @@
+timestamp,geohash,current_speed_kmh,free_flow_speed_kmh,congestion_ratio,traffic_condition
+2026-06-11 22:31:37,sxk9e8,28,33,0.848,Orta Yoğunluk (Akıcı Trafik)
+2026-06-11 22:31:37,sxk9eq,44,44,1.0,Düşük Yoğunluk (Açık Yol)
+2026-06-11 22:31:37,sxk9ew,44,44,1.0,Düşük Yoğunluk (Açık Yol)
+2026-06-11 22:31:37,sxk9ec,24,33,0.727,Orta Yoğunluk (Akıcı Trafik)
