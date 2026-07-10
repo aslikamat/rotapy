@@ -21,3 +21,7 @@ Biletwise,"Futbol, Basketbol, Voleybol, Konser, Tiyatro, Özel Etkinlikler"
 Eventbrite,"Seminer, Atölye, Zirve, Networking, Sergi, Ücretsiz Etkinlikler, Teknoloji Toplantıları"
 Moda Sahnesi,"Tiyatro, Bağımsız Sinema, Atölye, Seminer, Konser"
 Bilet.com (Etkinlik),"Tema Park, Müze, Konser, Tiyatro, Spor Müsabakaları"
+
+
+Beşiktaş bölgesi için geohashler : 
+['sxk9s3', 'sxk9s5', 'sxk9s6', 'sxk9s2', 'sxk9s8', 'sxk9s0', 'sxk9kk', 'sxk9se', 'sxk9sk', 'sxk9kt', 'sxk9kr', 'sxk9e9', 'sxk9s9', 'sxk9sh', 'sxk97s', 'sxk9s4', 'sxk9ec', 'sxk9ks', 'sxk9ef', 'sxk9kx', 'sxk9eb', 'sxk9km', 'sxk9ed', 'sxk9s7', 'sxk9eu', 'sxk9kp', 'sxk97t', 'sxk9s1', 'sxk97y', 'sxk9sd', 'sxk97w', 'sxk9ee', 'sxk9es', 'sxk9ss', 'sxk97z', 'sxk9kh', 'sxk9e8', 'sxk9kw', 'sxk97x', 'sxk9eg', 'sxk9kq', 'sxk9kj', 'sxk9kn', 'sxk97v', 'sxk97u']
