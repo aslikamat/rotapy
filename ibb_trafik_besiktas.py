@@ -435,8 +435,7 @@ def main():
     print(merged[show_cols].head().to_string(index=False))
 
 
-if __name__ == "__main__":
-    main()
+
 
 
 # =============================================================================
@@ -500,3 +499,5 @@ def clean_and_fill(df: pd.DataFrame, target_col: str = "target") -> pd.DataFrame
     print(f"  Temizlik sonrası: {len(df):,} satır")
 
     return df
+if __name__ == "__main__":
+    main()
