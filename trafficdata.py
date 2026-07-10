@@ -8,12 +8,7 @@ import time
 API_KEY = "9dqoh1Ho4b8xTvYB3tnZCtGEb5qUS2S1"
 
 # Beşiktaş bölgesini temsil eden Geohash listesi (Düğümler)
-BESIKTAS_GEOHASHES = [
-    "sxk9e8", 
-    "sxk9eq", 
-    "sxk9ew", 
-    "sxk9ec", 
-]
+BESIKTAS_GEOHASHES = ["sxk9s3", "sxk9s5", "sxk9s6", "sxk9s2", "sxk9s8", "sxk9s0", "sxk9kk", "sxk9se", "sxk9sk", "sxk9kt", "sxk9kr", "sxk9e9", "sxk9s9", "sxk9sh", "sxk97s", "sxk9s4", "sxk9ec", "sxk9ks", "sxk9ef", "sxk9kx", "sxk9eb", "sxk9km", "sxk9ed", "sxk9s7", "sxk9eu", "sxk9kp", "sxk97t", "sxk9s1", "sxk97y", "sxk9sd", "sxk97w", "sxk9ee", "sxk9es", "sxk9ss", "sxk97z", "sxk9kh", "sxk9e8", "sxk9kw", "sxk97x", "sxk9eg", "sxk9kq", "sxk9kj", "sxk9kn", "sxk97v", "sxk97u"]
 def get_traffic_label(ratio):
     """Yoğunluk oranına göre sözel yorum satırı belirler."""
     if ratio >= 0.90:
