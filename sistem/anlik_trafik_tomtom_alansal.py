@@ -1,29 +1,39 @@
 """
 TomTom Traffic — Beşiktaş ALANSAL Veri Toplayıcı
 ==================================================
-Beşiktaş'taki tüm ana yol segmentlerini (OSM tabanlı, ~120 segment)
+Beşiktaş'taki tüm ana yol noktalarını (OSM tabanlı, 58 nokta)
 TomTom Flow Segment API ile sorgular.
 
 Noktasal değil, YOL BAZLI çekim:
-  - Her sorgu bir yol segmentini temsil eder
-  - Segment adı (sokak adı), uzunluğu, hızı birlikte kaydedilir
+  - Her sorgu bir yol segmentini temsil eder (dahili olarak)
+  - Çıktıda segment kimliği/adı YER ALMAZ — bunun yerine
+    latitude, longitude ve bu ikisinden üretilen GEOHASH kullanılır
   - Isı haritası / choropleth harita için kullanılabilir
 
 Kurulum:
-    pip install requests pandas
+    pip install requests pandas pyarrow
 
 Kullanım:
-    python tomtom_besiktas_alansal.py --key TOMTOM_KEY
-    python tomtom_besiktas_alansal.py --demo               # API gerektirmez
-    python tomtom_besiktas_alansal.py --key KEY --interval 10
-    python tomtom_besiktas_alansal.py --merge              # CSV birleştir
+    python tomtom_besiktas_alansal.py                       # API key gömülü, direkt çalışır
+    python tomtom_besiktas_alansal.py --demo                 # API gerektirmez
+    python tomtom_besiktas_alansal.py --interval 10
+    python tomtom_besiktas_alansal.py --merge                # Parquet birleştir
+    python tomtom_besiktas_alansal.py --demo --geohash-precision 8
 
-TomTom ücretsiz key → developer.tomtom.com
-(2500 istek/gün — 10dk aralık + 120 segment = 120×144 = 1728 istek/gün ✓)
+TomTom API key kodun içine gömülüdür (aşağıda --key varsayılanı).
+Nokta sayısı 58'dir; 2500 istek/gün ücretsiz limit için önerilen
+aralık program başlarken ekrana yazdırılır (interval * nokta sayısı
+hesabına göre otomatik uyarı verir).
 
-Doldurmanız gerekenler:
-    --key   : TomTom API key'iniz
-    Bunun dışında hiçbir şey değiştirmenize gerek yok.
+Doldurmanız gereken bir şey yok — key zaten tanımlı.
+
+Bu versiyondaki değişiklikler:
+    1) Çıktıda segment_id / road_name YOK. Bunun yerine lat, lon ve
+       bunlardan hesaplanan `geohash` sütunu var (harici kütüphane
+       gerekmeyen saf Python implementasyonu ile).
+    2) Zaman tarafında ayrı date / hour / minute sütunları yerine,
+       date ve hour'un birleştirildiği tek bir `date_hour` sütunu var;
+       minute sütunu tamamen kaldırıldı.
 """
 
 import requests
@@ -35,9 +45,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # =============================================================================
-# BEŞİKTAŞ YOL SEGMENTLERI
-# OSM'den elle derlenmiş ~120 kritik segment.
-# Her segment: ad, merkez koordinatı (lat/lon), tahmini uzunluk (m)
+# BEŞİKTAŞ YOL SEGMENTLERI (dahili kullanım — sadece sorgu noktalarını
+# belirlemek için kullanılır, çıktıya segment kimliği yazılmaz)
 # =============================================================================
 
 ROAD_SEGMENTS = [
@@ -143,6 +152,51 @@ TOMTOM_FLOW_URL = (
     "/flowSegmentData/absolute/10/json"
 )
 
+# Varsayılan geohash hassasiyeti (karakter sayısı).
+# 7 karakter ≈ ~150m x 150m hücre boyutu — yol segmenti ölçeği için uygundur.
+GEOHASH_PRECISION = 7
+
+
+# =============================================================================
+# GEOHASH — harici kütüphane gerektirmeyen saf Python implementasyonu
+# (standart base32 geohash algoritması)
+# =============================================================================
+
+_GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+
+
+def encode_geohash(lat: float, lon: float, precision: int = GEOHASH_PRECISION) -> str:
+    lat_range = [-90.0, 90.0]
+    lon_range = [-180.0, 180.0]
+    geohash = []
+    bits = [16, 8, 4, 2, 1]
+    bit = 0
+    ch = 0
+    even = True
+    while len(geohash) < precision:
+        if even:
+            mid = (lon_range[0] + lon_range[1]) / 2
+            if lon > mid:
+                ch |= bits[bit]
+                lon_range[0] = mid
+            else:
+                lon_range[1] = mid
+        else:
+            mid = (lat_range[0] + lat_range[1]) / 2
+            if lat > mid:
+                ch |= bits[bit]
+                lat_range[0] = mid
+            else:
+                lat_range[1] = mid
+        even = not even
+        if bit < 4:
+            bit += 1
+        else:
+            geohash.append(_GEOHASH_BASE32[ch])
+            bit = 0
+            ch = 0
+    return "".join(geohash)
+
 
 # =============================================================================
 # ETKİNLİK YÜKLEME
@@ -204,7 +258,8 @@ def fetch_segment(seg: dict, api_key: str) -> dict | None:
         return None
 
 
-def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool) -> dict:
+def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool,
+              geohash_precision: int = GEOHASH_PRECISION) -> dict:
     if demo or raw is None:
         # Demo: saate göre gerçekçi simülasyon
         h = ts.hour
@@ -239,19 +294,16 @@ def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool) -> dict:
     delay      = round((tt - fft) / max(fft, 1), 4)
 
     return {
-        # Zaman
+        # Zaman — date ve hour birleştirildi, minute kaldırıldı
         "timestamp":        ts.strftime("%Y-%m-%d %H:%M:%S"),
-        "date":             ts.strftime("%Y-%m-%d"),
-        "hour":             ts.hour,
-        "minute":           ts.minute,
+        "date_hour":         ts.strftime("%Y-%m-%d %H"),
         "weekday":          ts.weekday(),          # 0=Pzt 6=Paz
         "is_weekend":       int(ts.weekday() >= 5),
         "is_event_time":    is_event(ts),
-        # Segment kimliği
-        "segment_id":       seg["id"],
-        "road_name":        seg["road"],
+        # Konum — segment kimliği/adı yok; lat, lon ve geohash var
         "lat":              seg["lat"],
         "lon":              seg["lon"],
+        "geohash":          encode_geohash(seg["lat"], seg["lon"], geohash_precision),
         "length_m":         seg["length_m"],
         # Trafik metrikleri
         "current_speed":    current,
@@ -269,7 +321,7 @@ def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool) -> dict:
 # TOPLAMA DÖNGÜSÜ
 # =============================================================================
 
-def snapshot(api_key: str, demo: bool) -> list[dict]:
+def snapshot(api_key: str, demo: bool, geohash_precision: int) -> list[dict]:
     ts   = datetime.now()
     rows = []
     for seg in ROAD_SEGMENTS:
@@ -278,16 +330,18 @@ def snapshot(api_key: str, demo: bool) -> list[dict]:
         else:
             raw = fetch_segment(seg, api_key)
             time.sleep(0.15)   # rate limit koruması
-        rows.append(build_row(seg, raw, ts, demo))
+        rows.append(build_row(seg, raw, ts, demo, geohash_precision))
     return rows
 
 
 def append_csv(rows: list[dict], path: Path) -> None:
     if not rows:
         return
-    df     = pd.DataFrame(rows)
-    header = not path.exists()
-    df.to_parquet(path, index=False, engine="pyarrow") if not path.exists() else pd.concat([pd.read_parquet(path), df]).to_parquet(path, index=False, engine="pyarrow")
+    df = pd.DataFrame(rows)
+    if not path.exists():
+        df.to_parquet(path, index=False, engine="pyarrow")
+    else:
+        pd.concat([pd.read_parquet(path), df]).to_parquet(path, index=False, engine="pyarrow")
 
 
 def run(
@@ -296,6 +350,7 @@ def run(
     total_hours: int | None = None,
     demo: bool         = False,
     events_csv: str | None = None,
+    geohash_precision: int = GEOHASH_PRECISION,
 ) -> None:
 
     if events_csv:
@@ -309,7 +364,8 @@ def run(
     print(f"\n{'='*60}")
     print(f"  Beşiktaş Alansal Trafik Toplayıcı")
     print(f"{'='*60}")
-    print(f"  Segment sayısı : {n_seg}")
+    print(f"  Nokta sayısı   : {n_seg}")
+    print(f"  Geohash hassa. : {geohash_precision} karakter")
     print(f"  Aralık         : {interval_min} dakika")
     print(f"  Tahmini istek  : ~{daily} istek/gün")
     print(f"  Ücretsiz limit : 2500 istek/gün  "
@@ -327,7 +383,7 @@ def run(
 
             snap_num += 1
             t0   = datetime.now()
-            rows = snapshot(api_key, demo)
+            rows = snapshot(api_key, demo, geohash_precision)
             append_csv(rows, out)
             total_rows += len(rows)
 
@@ -335,7 +391,7 @@ def run(
             print(
                 f"[{t0.strftime('%H:%M:%S')}] "
                 f"Snapshot #{snap_num:>4} | "
-                f"{len(rows):>3} segment | "
+                f"{len(rows):>3} nokta | "
                 f"{elapsed:.1f}s | "
                 f"toplam {total_rows} satır"
             )
@@ -361,8 +417,8 @@ def merge_csvs(out: str = "besiktas_alansal_merged.parquet") -> None:
         return
     dfs = [pd.read_parquet(f) for f in files]
     merged = pd.concat(dfs, ignore_index=True)
-    merged.drop_duplicates(subset=["timestamp", "segment_id"], inplace=True)
-    merged.sort_values(["timestamp", "segment_id"], inplace=True)
+    merged.drop_duplicates(subset=["timestamp", "geohash"], inplace=True)
+    merged.sort_values(["timestamp", "geohash"], inplace=True)
     merged.to_parquet(out, index=False, engine="pyarrow")
     print(f"[Birleştirildi] {len(merged)} satır → {out}")
 
@@ -375,7 +431,7 @@ def main() -> None:
     p = argparse.ArgumentParser(
         description="TomTom Beşiktaş Alansal Trafik Toplayıcı"
     )
-    p.add_argument("--key",      default="DEMO",
+    p.add_argument("--key",      default="9dqoh1Ho4b8xTvYB3tnZCtGEb5qUS2S1",
                    help="TomTom API key")
     p.add_argument("--interval", type=int, default=10,
                    help="Veri aralığı (dakika, varsayılan: 10)")
@@ -384,9 +440,11 @@ def main() -> None:
     p.add_argument("--demo",     action="store_true",
                    help="Demo modu — API gerekmez")
     p.add_argument("--merge",    action="store_true",
-                   help="Günlük CSV'leri tek dosyada birleştir")
+                   help="Günlük parquet dosyalarını tek dosyada birleştir")
     p.add_argument("--events",   default=None,
                    help="Etkinlik CSV (besiktas_events.csv)")
+    p.add_argument("--geohash-precision", type=int, default=GEOHASH_PRECISION,
+                   help=f"Geohash karakter uzunluğu (varsayılan: {GEOHASH_PRECISION})")
     args = p.parse_args()
 
     if args.merge:
@@ -395,11 +453,12 @@ def main() -> None:
 
     demo = args.demo or args.key == "DEMO"
     run(
-        api_key      = args.key,
-        interval_min = args.interval,
-        total_hours  = args.hours,
-        demo         = demo,
-        events_csv   = args.events,
+        api_key            = args.key,
+        interval_min       = args.interval,
+        total_hours        = args.hours,
+        demo               = demo,
+        events_csv         = args.events,
+        geohash_precision  = args.geohash_precision,
     )
 
 

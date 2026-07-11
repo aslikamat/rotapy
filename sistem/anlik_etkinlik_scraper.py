@@ -20,6 +20,17 @@ Model entegrasyonu:
   from anlik_etkinlik_scraper import get_active_events, is_event_now
   events = get_active_events()          # liste döner
   flag   = is_event_now(lat, lon)       # 0 veya 1 döner (LSTM feature)
+
+────────────────────────────────────────────────────────────────────
+DEĞİŞİKLİK GEÇMİŞİ
+────────────────────────────────────────────────────────────────────
+- `event_date` + `start_time` ve `event_date` + `end_time` birleştirildi:
+  `start_date_hour` / `end_date_hour` sütunları (dakika bilgisi YOK,
+  örn. "2026-07-11 20"). Dakika hassasiyeti gereken aktiflik kontrolü
+  için `start_datetime` / `end_datetime` (tam ISO) korunuyor.
+- YENİ: her etkinliğin mekân koordinatından (lat/lon) üretilen
+  `geohash` sütunu eklendi — trafik ve hava durumu scriptleriyle
+  aynı algoritma/hassasiyet, birleştirme (join) için kullanılabilir.
 """
 
 import re
@@ -70,6 +81,48 @@ def is_besiktas(venue: str, extra: str = "") -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GEOHASH — harici kütüphane gerektirmeyen saf Python implementasyonu
+# (trafik ve hava durumu scriptleriyle AYNI algoritma/hassasiyet)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GEOHASH_PRECISION = 7
+_GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+
+
+def encode_geohash(lat: float, lon: float, precision: int = GEOHASH_PRECISION) -> str:
+    lat_range = [-90.0, 90.0]
+    lon_range = [-180.0, 180.0]
+    geohash = []
+    bits = [16, 8, 4, 2, 1]
+    bit = 0
+    ch = 0
+    even = True
+    while len(geohash) < precision:
+        if even:
+            mid = (lon_range[0] + lon_range[1]) / 2
+            if lon > mid:
+                ch |= bits[bit]
+                lon_range[0] = mid
+            else:
+                lon_range[1] = mid
+        else:
+            mid = (lat_range[0] + lat_range[1]) / 2
+            if lat > mid:
+                ch |= bits[bit]
+                lat_range[0] = mid
+            else:
+                lat_range[1] = mid
+        even = not even
+        if bit < 4:
+            bit += 1
+        else:
+            geohash.append(_GEOHASH_BASE32[ch])
+            bit = 0
+            ch = 0
+    return "".join(geohash)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # RADAR TÜRKİYE — anlık çekim
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -111,6 +164,17 @@ def _estimate_end(start_dt: datetime, category: str) -> datetime:
     hours = {"Spor": 2.5, "Konser": 3.0, "Festival": 4.0,
              "Tiyatro": 2.5, "Stand-up": 2.0}.get(category, 2.5)
     return start_dt + timedelta(hours=hours)
+
+
+def _date_hour(dt: datetime | None, fallback_date: str = "") -> str:
+    """
+    Tarih + saati tek sütunda birleştirir, dakika bilgisi YOK.
+    dt varsa  -> "YYYY-MM-DD HH"
+    dt yoksa  -> sadece fallback_date (saat bilinmiyor)
+    """
+    if dt:
+        return dt.strftime("%Y-%m-%d %H")
+    return fallback_date
 
 
 def scrape_radar_anlik(days_ahead: int = 7) -> list[dict]:
@@ -267,14 +331,14 @@ def _parse_radar_cards_anlik(soup, today: datetime, end_date: datetime) -> list[
                 "source":               "Radar Türkiye",
                 "name":                 name,
                 "category":             category,
-                "event_date":           date_str,
-                "start_time":           time_str or "Belirtilmemiş",
-                "end_time":             end_dt.strftime("%H:%M") if end_dt else "",
+                "start_date_hour":      _date_hour(start_dt, date_str),
+                "end_date_hour":        _date_hour(end_dt, ""),
                 "start_datetime":       start_dt.isoformat() if start_dt else "",
                 "end_datetime":         end_dt.isoformat()   if end_dt   else "",
                 "venue":                venue,
                 "lat":                  vi["lat"],
                 "lon":                  vi["lon"],
+                "geohash":              encode_geohash(vi["lat"], vi["lon"]),
                 "estimated_attendance": vi["cap"],
                 "is_active":            _is_active_now(start_dt, end_dt),
                 "url":                  url,
@@ -345,14 +409,14 @@ def fetch_ticketmaster_anlik(api_key: str, days_ahead: int = 7) -> list[dict]:
                 "source":               "Ticketmaster",
                 "name":                 ev.get("name", ""),
                 "category":             category,
-                "event_date":           date_str,
-                "start_time":           time_str or "Belirtilmemiş",
-                "end_time":             end_dt.strftime("%H:%M") if end_dt else "",
+                "start_date_hour":      _date_hour(start_dt, date_str),
+                "end_date_hour":        _date_hour(end_dt, ""),
                 "start_datetime":       start_dt.isoformat() if start_dt else "",
                 "end_datetime":         end_dt.isoformat()   if end_dt   else "",
                 "venue":                venue_name,
                 "lat":                  lat,
                 "lon":                  lon,
+                "geohash":              encode_geohash(lat, lon),
                 "estimated_attendance": vi["cap"],
                 "is_active":            _is_active_now(start_dt, end_dt),
                 "url":                  ev.get("url", ""),
@@ -390,15 +454,15 @@ def get_active_events(tm_key: str = "", days_ahead: int = 7) -> list[dict]:
     if tm_key:
         events += fetch_ticketmaster_anlik(tm_key, days_ahead)
 
-    # Yineleme temizle
+    # Yineleme temizle — tarih kısmı start_date_hour'un ilk 10 karakteri
     seen, out = set(), []
     for e in events:
-        key = (e["event_date"], e["venue"][:20].lower())
+        key = (e.get("start_date_hour", "")[:10], e["venue"][:20].lower())
         if key not in seen:
             seen.add(key)
             out.append(e)
 
-    out.sort(key=lambda e: e.get("start_datetime") or e.get("event_date") or "")
+    out.sort(key=lambda e: e.get("start_datetime") or e.get("start_date_hour") or "")
     return out
 
 
@@ -456,7 +520,7 @@ def get_event_features(tm_key: str = "") -> dict:
     now    = datetime.now()
     today  = now.strftime("%Y-%m-%d")
 
-    today_events   = [e for e in events if e.get("event_date") == today]
+    today_events   = [e for e in events if e.get("start_date_hour", "")[:10] == today]
     active_events  = [e for e in today_events if e.get("is_active") == 1]
     future_events  = []
 
@@ -531,8 +595,8 @@ def main():
         for i, e in enumerate(events, 1):
             aktif = " ◀ ŞU AN AKTİF" if e.get("is_active") else ""
             print(f"\n{i:>2}. {e['name']}{aktif}")
-            print(f"    {e['event_date']}  {e['start_time']} – {e['end_time']}")
-            print(f"    {e['venue']}")
+            print(f"    {e['start_date_hour']} – {e['end_date_hour']}")
+            print(f"    {e['venue']}  [{e['geohash']}]")
             print(f"    Tahmini katılım: {e['estimated_attendance']:,}")
         print(f"\n{'='*60}")
         print(f"  Toplam: {len(events)} etkinlik")
