@@ -30,6 +30,44 @@ from pathlib import Path
 from io import StringIO
 
 # =============================================================================
+# GEOHASH — harici kütüphane gerektirmeyen saf Python implementasyonu
+# anlik_trafik_tomtom_alansal.py ile AYNI implementasyon — join tutarlılığı
+# =============================================================================
+
+_GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+GEOHASH_PRECISION = 7
+
+
+def encode_geohash(lat: float, lon: float, precision: int = GEOHASH_PRECISION) -> str:
+    lat_range = [-90.0, 90.0]
+    lon_range = [-180.0, 180.0]
+    geohash   = []
+    bits      = [16, 8, 4, 2, 1]
+    bit, ch, even = 0, 0, True
+    while len(geohash) < precision:
+        if even:
+            mid = (lon_range[0] + lon_range[1]) / 2
+            if lon > mid:
+                ch |= bits[bit]; lon_range[0] = mid
+            else:
+                lon_range[1] = mid
+        else:
+            mid = (lat_range[0] + lat_range[1]) / 2
+            if lat > mid:
+                ch |= bits[bit]; lat_range[0] = mid
+            else:
+                lat_range[1] = mid
+        even = not even
+        if bit < 4:
+            bit += 1
+        else:
+            geohash.append(_GEOHASH_BASE32[ch])
+            bit = ch = 0
+    return "".join(geohash)
+
+
+
+# =============================================================================
 # İNDİRİLECEK DOSYALAR — Ocak 2020 → Ocak 2025
 # =============================================================================
 
@@ -258,7 +296,6 @@ def process_month(df: pd.DataFrame, ym: str) -> pd.DataFrame:
 
     # Standart sütunlar
     out = pd.DataFrame()
-    out["ym"]       = ym
 
     # Tarih/saat
     if dt_col:
@@ -267,15 +304,18 @@ def process_month(df: pd.DataFrame, ym: str) -> pd.DataFrame:
         # Tarih yok — ay bilgisinden üret
         out["datetime"] = pd.to_datetime(f"{ym[:4]}-{ym[4:]}-01")
 
-    out["date"]     = out["datetime"].dt.date.astype(str)
-    out["hour"]     = out["datetime"].dt.hour
-    out["weekday"]  = out["datetime"].dt.weekday   # 0=Pzt, 6=Paz
+    out["date_hour"]  = out["datetime"].dt.strftime("%Y-%m-%d %H")
+    out["weekday"]    = out["datetime"].dt.weekday   # 0=Pzt, 6=Paz
     out["is_weekend"] = (out["weekday"] >= 5).astype(int)
 
-    # Konum
-    out["lat"]      = pd.to_numeric(df_b[lat_col],  errors="coerce") if lat_col  else None
-    out["lon"]      = pd.to_numeric(df_b[lon_col],  errors="coerce") if lon_col  else None
-    out["location"] = df_b[loc_col].values if loc_col else "Beşiktaş"
+    # Konum — geohash eklendi, location kaldırıldı
+    out["lat"]     = pd.to_numeric(df_b[lat_col], errors="coerce") if lat_col else None
+    out["lon"]     = pd.to_numeric(df_b[lon_col], errors="coerce") if lon_col else None
+    out["geohash"] = out.apply(
+        lambda r: encode_geohash(r["lat"], r["lon"])
+        if pd.notna(r.get("lat")) and pd.notna(r.get("lon")) else "",
+        axis=1
+    )
 
     # Trafik metrikleri
     out["speed"]    = pd.to_numeric(df_b[spd_col],  errors="coerce") if spd_col  else None
@@ -322,7 +362,8 @@ def add_lstm_features(df: pd.DataFrame) -> pd.DataFrame:
     if target_col in df.columns:
         df["target"] = df[target_col]
         # Lag özellikleri (lokasyon bazında)
-        for loc, grp in df.groupby("location"):
+        group_col = "geohash" if "geohash" in df.columns else "lat"
+        for loc, grp in df.groupby(group_col):
             idx = grp.index
             df.loc[idx, "lag_1h"]  = grp[target_col].shift(1).values
             df.loc[idx, "lag_24h"] = grp[target_col].shift(24).values
@@ -358,17 +399,19 @@ def clean_and_fill(df: pd.DataFrame, target_col: str = "target") -> pd.DataFrame
     eksik_once = df[target_col].isna().sum()
 
     # 2. Weekday + hour ortalaması tablosu
+    hour_col = "hour" if "hour" in df.columns else df["datetime"].dt.hour
+    group_col = "geohash" if "geohash" in df.columns else "lat"
     ortalama = (
-        df.groupby(["weekday", "hour", "location"])[target_col]
+        df.groupby(["weekday", group_col])[target_col]
         .mean()
         .rename("ortalama")
         .reset_index()
     )
-    df = df.merge(ortalama, on=["weekday", "hour", "location"], how="left")
+    df = df.merge(ortalama, on=["weekday", group_col], how="left")
 
-    # 3. Ardışık eksik bloklarını tespit et (lokasyon bazında)
+    # 3. Ardışık eksik bloklarını tespit et (geohash bazında)
     filled = []
-    for loc, grp in df.groupby("location"):
+    for loc, grp in df.groupby(group_col):
         grp = grp.sort_values("datetime").copy()
 
         # Ardışık eksik sayacı
@@ -485,15 +528,15 @@ def main():
     print(f"  TAMAMLANDI")
     print(f"{'='*60}")
     print(f"  Toplam satır  : {len(merged):,}")
-    print(f"  Tarih aralığı : {merged['date'].min()} → {merged['date'].max()}")
+    print(f"  Tarih aralığı : {merged['date_hour'].min()[:10]} → {merged['date_hour'].max()[:10]}")
     print(f"  Sütunlar      : {list(merged.columns)}")
     print(f"  Çıktı         : {args.out}")
     print(f"{'='*60}")
 
     # Sample göster
     print("\nİlk 5 satır:")
-    show_cols = ["datetime", "location", "lat", "lon",
-                 "speed", "density", "hour", "is_weekend", "target"]
+    show_cols = ["datetime", "date_hour", "geohash", "lat", "lon",
+                 "speed", "density", "is_weekend", "target"]
     show_cols = [c for c in show_cols if c in merged.columns]
     print(merged[show_cols].head().to_string(index=False))
 
