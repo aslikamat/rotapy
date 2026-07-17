@@ -44,6 +44,7 @@ Gerekirse --start/--end ile aralığı daraltın.
 import requests
 import pandas as pd
 import argparse
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -339,6 +340,27 @@ def save(df: pd.DataFrame, path: str) -> None:
     df.to_parquet(path, index=False, engine="pyarrow")
     size_kb = Path(path).stat().st_size // 1024
     print(f"  [Kaydedildi] {path}  ({len(df):,} satır, {size_kb} KB)")
+
+    # Kalite raporu
+    kalite = {
+        "kaynak":           "Open-Meteo Archive API",
+        "nokta_sayisi":     int(df["geohash"].nunique()) if "geohash" in df.columns else 1,
+        "toplam_satir":     int(len(df)),
+        "eksik_deger":      {col: int(df[col].isna().sum())
+                             for col in df.columns if df[col].isna().sum() > 0},
+        "tarih_araligi":    {
+            "baslangic": str(df["timestamp"].min())[:10] if "timestamp" in df.columns else "",
+            "bitis":     str(df["timestamp"].max())[:10] if "timestamp" in df.columns else "",
+        },
+        "yagisli_saat":     int(df["is_rainy"].sum()) if "is_rainy" in df.columns else 0,
+        "karli_saat":       int(df["is_snowy"].sum()) if "is_snowy" in df.columns else 0,
+        "firtinali_saat":   int(df["is_stormy"].sum()) if "is_stormy" in df.columns else 0,
+        "kotu_hava_saat":   int(df["is_bad_weather"].sum()) if "is_bad_weather" in df.columns else 0,
+    }
+    kalite_path = str(path).replace(".parquet", "_kalite.json")
+    with open(kalite_path, "w", encoding="utf-8") as f:
+        json.dump(kalite, f, ensure_ascii=False, indent=2)
+    print(f"  [Kalite]     {kalite_path}")
 
 
 # =============================================================================

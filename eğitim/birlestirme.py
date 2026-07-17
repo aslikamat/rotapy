@@ -41,6 +41,7 @@ Sütunlar:
 import pandas as pd
 import numpy as np
 import argparse
+import json
 from pathlib import Path
 from datetime import datetime
 
@@ -143,10 +144,13 @@ def load_trafik(path: str) -> pd.DataFrame:
 
     # lag NaN'larını at
     lag_cols = [c for c in ["lag_1h", "lag_24h", "lag_7d"] if c in df.columns]
+    lag_nan_silinen = 0
     if lag_cols:
         before = len(df)
         df = df.dropna(subset=lag_cols)
-        print(f"  lag NaN'ları atıldı: {before - len(df):,} satır")
+        lag_nan_silinen = before - len(df)
+        print(f"  lag NaN'ları atıldı: {lag_nan_silinen:,} satır")
+    df._lag_nan_silinen = lag_nan_silinen
 
     print(f"  {len(df):,} satır yüklendi ✓")
     print(f"  Tarih: {df['date_hour'].min()[:10]} → {df['date_hour'].max()[:10]}")
@@ -364,8 +368,10 @@ def load_hava(path: str, trafik_df: pd.DataFrame) -> pd.DataFrame:
         if col in merged.columns:
             merged[col] = merged[col].fillna(0)
 
-    toplam_eslesen = merged["temperature_c"].ne(0).sum()
+    toplam_eslesen  = merged["temperature_c"].ne(0).sum()
+    hava_eslesmeyen = len(merged) - int(toplam_eslesen)
     print(f"  Toplam eşleşen: {toplam_eslesen:,} / {len(merged):,} satır ✓")
+    merged.attrs["hava_eslesmeyen"] = hava_eslesmeyen
     return merged
 
 
@@ -386,9 +392,11 @@ def finalize(df: pd.DataFrame, sample_n: int = None) -> pd.DataFrame:
 
     # Kritik NaN'ları at
     critical = [c for c in ["density", "datetime", "lat", "lon"] if c in df.columns]
-    before   = len(df)
-    df       = df.dropna(subset=critical)
-    print(f"  NaN atıldı: {before - len(df):,} satır")
+    before          = len(df)
+    df              = df.dropna(subset=critical)
+    finalize_silinen = before - len(df)
+    print(f"  NaN atıldı: {finalize_silinen:,} satır")
+    df.attrs["finalize_nan_silinen"] = finalize_silinen
 
     df = df.sort_values("datetime").reset_index(drop=True)
 
@@ -400,6 +408,61 @@ def finalize(df: pd.DataFrame, sample_n: int = None) -> pd.DataFrame:
     print(f"  Final satır : {len(df):,}")
     print(f"  Final sütun : {len(df.columns)}")
     return df
+
+
+# =============================================================================
+# KALİTE RAPORU — tüm scriptlerin sayaçlarını toplar
+# =============================================================================
+
+def save_quality_report(df: pd.DataFrame, sayaclar: dict, out_path: str) -> None:
+    """
+    Her scriptin ürettiği kalite JSON'larını okur,
+    kendi sayaçlarıyla birleştirerek ana raporu üretir.
+    """
+    rapor = {
+        "olusturma_zamani": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "final_veri": {
+            "satir_sayisi":     int(len(df)),
+            "sutun_sayisi":     int(len(df.columns)),
+            "tarih_araligi": {
+                "baslangic": str(df["date_hour"].min())[:10] if "date_hour" in df.columns else "",
+                "bitis":     str(df["date_hour"].max())[:10] if "date_hour" in df.columns else "",
+            },
+            "benzersiz_geohash": int(df["geohash"].nunique()) if "geohash" in df.columns else 0,
+        },
+        "birlestirme_sayaclari": sayaclar,
+        "kaynak_raporlar": {},
+    }
+
+    # Her scriptin kalite raporunu oku
+    for dosya, anahtar in [
+        ("trafik_kalite.json",              "trafik"),
+        ("etkinlik_kalite.json",            "etkinlik"),
+        ("gecmis_hava_durumu_kalite.json",  "hava"),
+    ]:
+        if Path(dosya).exists():
+            with open(dosya, encoding="utf-8") as f:
+                rapor["kaynak_raporlar"][anahtar] = json.load(f)
+        else:
+            rapor["kaynak_raporlar"][anahtar] = {"durum": "rapor bulunamadi"}
+
+    # Kaydet
+    with open("veri_kalite_raporu.json", "w", encoding="utf-8") as f:
+        json.dump(rapor, f, ensure_ascii=False, indent=2)
+
+    # Ekrana özet yaz
+    print(f"\n{'='*60}")
+    print(f"  VERİ KALİTE RAPORU")
+    print(f"{'='*60}")
+    print(f"  Final satır          : {len(df):,}")
+    s = sayaclar
+    print(f"  Lag NaN silinen      : {s.get('lag_nan_silinen', 0):,}")
+    print(f"  Ortalama doldurulan  : {s.get('ortalama_doldurulan', 0):,}")
+    print(f"  Finalize NaN silinen : {s.get('finalize_nan_silinen', 0):,}")
+    print(f"  Hava eşleşmeyen→0   : {s.get('hava_eslesmeyen', 0):,}")
+    print(f"  Etkinlik dışı satır  : {s.get('etkinlik_disinda', 0):,}")
+    print(f"  Kaydedildi           : veri_kalite_raporu.json")
+    print(f"{'='*60}")
 
 
 # =============================================================================
@@ -461,8 +524,21 @@ def main():
     df = load_hava(args.hava, df)
     df = finalize(df, sample_n=args.sample)
 
+    # Sayaçları topla
+    sayaclar = {
+        "lag_nan_silinen":      df.attrs.get("lag_nan_silinen", 0),
+        "ortalama_doldurulan":  0,   # trafik scriptinden geliyor
+        "finalize_nan_silinen": df.attrs.get("finalize_nan_silinen", 0),
+        "hava_eslesmeyen":      df.attrs.get("hava_eslesmeyen", 0),
+        "etkinlik_disinda":     int((df["is_event"] == 0).sum()) if "is_event" in df.columns else 0,
+        "etkinlik_icerisinde":  int((df["is_event"] == 1).sum()) if "is_event" in df.columns else 0,
+    }
+
     df.to_parquet(args.out, index=False, engine="pyarrow")
     print_summary(df, args.out)
+
+    # Kalite raporu
+    save_quality_report(df, sayaclar, args.out)
 
     print(f"\n  Sonraki adım: python lstm_egitim.py --data {args.out}")
 

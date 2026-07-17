@@ -26,6 +26,7 @@ import pandas as pd
 import os
 import time
 import argparse
+import json
 from pathlib import Path
 from io import StringIO
 
@@ -435,12 +436,19 @@ def clean_and_fill(df: pd.DataFrame, target_col: str = "target") -> pd.DataFrame
         columns=["ortalama", "eksik_ardisik"], errors="ignore"
     )
 
-    eksik_sonra = df[target_col].isna().sum()
-    print(f"  Dolduruldu      : {eksik_once - eksik_sonra:,} eksik değer")
+    eksik_sonra  = df[target_col].isna().sum()
+    silinen      = eksik_once - (len(df) - (len(df) - eksik_sonra))
+    dolduruldu   = eksik_once - eksik_sonra
+
+    print(f"  Dolduruldu      : {dolduruldu:,} eksik değer (ortalama ile)")
     print(f"  Hâlâ eksik      : {eksik_sonra:,} (3+ ardışık blok atıldı)")
     print(f"  Temizlik sonrası: {len(df):,} satır")
 
-    return df
+    return df, {
+        "eksik_once":      int(eksik_once),
+        "dolduruldu":      int(dolduruldu),
+        "kalan_eksik":     int(eksik_sonra),
+    }
 
 def main():
     parser = argparse.ArgumentParser(
@@ -514,7 +522,7 @@ def main():
     # Eksik veri temizleme ve doldurma
     target = "density" if "density" in merged.columns and merged["density"].notna().any() else "speed"
     print(f"\n[Temizlik] Eksik veri dolduruluyor (hedef: {target})...")
-    merged = clean_and_fill(merged, target_col=target)
+    merged, temizlik_sayac = clean_and_fill(merged, target_col=target)
 
     # LSTM feature'ları ekle
     print("\n[Feature mühendisliği] Lag ve döngüsel özellikler ekleniyor...")
@@ -539,6 +547,24 @@ def main():
                  "speed", "density", "is_weekend", "target"]
     show_cols = [c for c in show_cols if c in merged.columns]
     print(merged[show_cols].head().to_string(index=False))
+
+    # Kalite raporu
+    ham_toplam   = sum(len(pd.read_csv(f, nrows=0).columns) and 1
+                       for f in Path("indirilen").glob("*.csv"))
+    kalite = {
+        "kaynak":               "IBB Acik Veri",
+        "indirilen_ay_sayisi":  len(all_frames),
+        "ham_satir_toplam":     int(sum(df_b is not None and len(df_b) or 0
+                                        for df_b in all_frames)),
+        "besiktas_filtre_sonrasi": int(len(merged)),
+        "lag_nan_silinen":      0,
+        "temizlik":             temizlik_sayac,
+        "final_satir":          int(len(merged)),
+        "final_sutun":          int(len(merged.columns)),
+    }
+    with open("trafik_kalite.json", "w", encoding="utf-8") as f:
+        json.dump(kalite, f, ensure_ascii=False, indent=2)
+    print(f"\n  Kalite raporu: trafik_kalite.json")
 
 
 if __name__ == "__main__":

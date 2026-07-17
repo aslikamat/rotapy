@@ -34,6 +34,7 @@ import time
 import json
 import argparse
 import random
+from datetime import datetime as _dt
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -782,6 +783,23 @@ def main():
 
     df = pd.DataFrame(all_events)
     df.to_parquet(args.out, index=False, engine="pyarrow")
+
+    # Kalite raporu
+    kalite = {
+        "kaynak":               "Radar TR + Ticketmaster + Setlist.fm + Mackolik",
+        "toplam_etkinlik":      int(len(df)),
+        "kaynak_dagilimi":      {k: int(v) for k, v in df["source"].value_counts().items()} if not df.empty else {},
+        "kategori_dagilimi":    {k: int(v) for k, v in df["category"].value_counts().items()} if not df.empty else {},
+        "yineleme_silinen":     int(len(all_events) - len(df)),
+        "koordinatsiz_silinen": int(df[["lat","lon"]].isna().any(axis=1).sum()) if not df.empty else 0,
+        "tarih_araligi":        {
+            "baslangic": args.start,
+            "bitis":     args.end,
+        },
+    }
+    with open("etkinlik_kalite.json", "w", encoding="utf-8") as f:
+        json.dump(kalite, f, ensure_ascii=False, indent=2)
+    print(f"  Kalite raporu: etkinlik_kalite.json")
 
     print(f"\n{'='*60}")
     print(f"  TAMAMLANDI")
