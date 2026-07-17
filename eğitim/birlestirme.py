@@ -171,7 +171,8 @@ def etki_yaricapi(kapasite: float) -> float:
     return round(TABAN_MESAFE_KM * (kapasite / MIN_CAPACITY) ** 0.5, 2)
 
 
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def haversine_km_skalar(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Tek nokta çifti için skaler hesaplama (fallback)."""
     R    = 6371
     dlat = np.radians(lat2 - lat1)
     dlon = np.radians(lon2 - lon1)
@@ -181,16 +182,43 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * np.arcsin(np.sqrt(a))
 
 
+def haversine_km_vektor(
+    lat1: np.ndarray, lon1: np.ndarray,
+    lat2: np.ndarray, lon2: np.ndarray,
+) -> np.ndarray:
+    """
+    Vektörize Haversine — N trafik noktası × M etkinlik noktası.
+    Dönen shape: (N, M) — her trafik satırı için tüm etkinliklere mesafe.
+    İç içe döngü yerine NumPy broadcast kullanır → çok daha hızlı.
+    """
+    R    = 6371.0
+    # lat1/lon1: (N,1)  lat2/lon2: (1,M)  → broadcast ile (N,M) çıkar
+    lat1 = np.radians(lat1[:, None])
+    lon1 = np.radians(lon1[:, None])
+    lat2 = np.radians(lat2[None, :])
+    lon2 = np.radians(lon2[None, :])
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a    = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    return R * 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+
+
 def load_etkinlik(path: str, trafik_df: pd.DataFrame) -> pd.DataFrame:
     """
     Etkinlik verisini trafik verisine mesafe bazlı ekler.
-    Birleştirme anahtarı: start_datetime / end_datetime + koordinat mesafesi.
 
-    Her trafik satırı için:
+    Vektörize yaklaşım — iç içe döngü YOK:
+      1. Her benzersiz saat dilimi için aktif etkinlikleri bul
+      2. O saatteki tüm trafik noktaları × tüm etkinlik noktaları
+         arasındaki mesafeyi NumPy broadcast ile TEK seferde hesapla
+      3. Etki yarıçapı içinde olanları işaretle
+
+    Her trafik satırı için üretilen sütunlar:
       is_event         : etki yarıçapı içinde etkinlik var mı? (0/1)
       event_attendance : varsa en büyük etkinliğin katılımcı sayısı
-      event_radius_km  : etki yarıçapı (km)
-      hours_to_event   : en yakın etkinliğe kaç saat kaldı
+      event_radius_km  : o etkinliğin etki yarıçapı (km)
+      hours_to_event   : en yakın gelecek etkinliğe kaç saat kaldı
     """
     print(f"\n[2/3] Etkinlik verisi işleniyor: {path}")
 
@@ -204,12 +232,11 @@ def load_etkinlik(path: str, trafik_df: pd.DataFrame) -> pd.DataFrame:
 
     ev = pd.read_parquet(path)
 
-    # start_datetime / end_datetime — her iki formatta da dene
+    # Tarih sütunlarını düzelt
     for col in ["start_datetime", "end_datetime"]:
         if col in ev.columns:
             ev[col] = pd.to_datetime(ev[col], errors="coerce")
 
-    # start_date_hour'dan start_datetime üret (eski format fallback)
     if "start_datetime" not in ev.columns and "start_date_hour" in ev.columns:
         ev["start_datetime"] = pd.to_datetime(
             ev["start_date_hour"], format="%Y-%m-%d %H", errors="coerce"
@@ -222,6 +249,7 @@ def load_etkinlik(path: str, trafik_df: pd.DataFrame) -> pd.DataFrame:
     ev = ev.dropna(subset=["start_datetime", "end_datetime", "lat", "lon"])
     ev = ev[ev["estimated_attendance"] >= MIN_CAPACITY].copy()
     ev["radius_km"] = ev["estimated_attendance"].apply(etki_yaricapi)
+    ev = ev.reset_index(drop=True)
 
     print(f"  {len(ev)} etkinlik yüklendi (kapasite ≥ {MIN_CAPACITY})")
     if not ev.empty:
@@ -234,36 +262,94 @@ def load_etkinlik(path: str, trafik_df: pd.DataFrame) -> pd.DataFrame:
     event_radius_km  = np.zeros(n, dtype=float)
     hours_to_event   = np.full(n, 99.0)
 
-    dt_index = pd.DatetimeIndex(trafik_df["datetime"].values)
-    lats     = trafik_df["lat"].values
-    lons     = trafik_df["lon"].values
+    t_lats = trafik_df["lat"].values.astype(float)
+    t_lons = trafik_df["lon"].values.astype(float)
+    t_dts  = trafik_df["datetime"].values  # numpy datetime64
 
-    for i, (dt, lat, lon) in enumerate(zip(dt_index, lats, lons)):
-        # Aktif etkinlikler
-        active = ev[
-            (ev["start_datetime"] <= dt) &
-            (ev["end_datetime"]   >= dt)
-        ]
-        if not active.empty:
-            for _, row in active.iterrows():
-                dist = haversine_km(lat, lon, row["lat"], row["lon"])
-                if dist <= row["radius_km"]:
-                    if row["estimated_attendance"] > event_attendance[i]:
-                        is_event[i]         = 1
-                        event_attendance[i] = row["estimated_attendance"]
-                        event_radius_km[i]  = row["radius_km"]
-                        hours_to_event[i]   = 0.0
+    # Etkinlik dizileri — NumPy array olarak hazırla
+    ev_starts  = ev["start_datetime"].values
+    ev_ends    = ev["end_datetime"].values
+    ev_lats    = ev["lat"].values.astype(float)
+    ev_lons    = ev["lon"].values.astype(float)
+    ev_caps    = ev["estimated_attendance"].values.astype(float)
+    ev_radii   = ev["radius_km"].values.astype(float)
 
-        # En yakın gelecek etkinlik
-        if is_event[i] == 0:
-            future = ev[ev["start_datetime"] > dt]
-            for _, row in future.iterrows():
-                dist = haversine_km(lat, lon, row["lat"], row["lon"])
-                if dist <= row["radius_km"]:
-                    diff = (row["start_datetime"] - dt).total_seconds() / 3600
-                    if diff < hours_to_event[i]:
-                        hours_to_event[i] = round(diff, 2)
-                    break
+    # ── Benzersiz saatleri bul ve toplu işle ──────────────────────────────
+    # Aynı saatteki tüm trafik noktalarını aynı anda hesapla
+    unique_hours = np.unique(t_dts.astype("datetime64[h]"))
+    print(f"  {len(unique_hours)} benzersiz saat işleniyor (vektörize)...")
+
+    for hour in unique_hours:
+        hour_pd = pd.Timestamp(hour)
+
+        # Bu saatte hangi trafik indeksleri var?
+        mask_t = (trafik_df["datetime"].dt.floor("h") == hour_pd).values
+
+        if not mask_t.any():
+            continue
+
+        # Bu saatte aktif etkinlikler
+        mask_ev = (ev_starts <= hour_pd) & (ev_ends >= hour_pd)
+
+        if mask_ev.any():
+            # Aktif etkinlik varsa — vektörize mesafe hesabı
+            # t_sub: (N_t,)  ev_sub: (N_e,)  → mesafeler: (N_t, N_e)
+            t_lat_sub = t_lats[mask_t]
+            t_lon_sub = t_lons[mask_t]
+            e_lat_sub = ev_lats[mask_ev]
+            e_lon_sub = ev_lons[mask_ev]
+            e_cap_sub = ev_caps[mask_ev]
+            e_rad_sub = ev_radii[mask_ev]
+
+            # (N_t, N_e) mesafe matrisi — tek NumPy işlemi
+            dist_matrix = haversine_km_vektor(t_lat_sub, t_lon_sub,
+                                              e_lat_sub, e_lon_sub)
+
+            # Her trafik noktası için etki yarıçapı içindeki etkinlikler
+            # dist_matrix[i,j] <= e_rad_sub[j]  →  trafik i, etkinlik j etkileniyor
+            etki_matrix = dist_matrix <= e_rad_sub[None, :]  # (N_t, N_e) bool
+
+            # Etkilenen etkinlikler arasından en büyük kapasiteli olanı seç
+            t_indices = np.where(mask_t)[0]
+            for ti, (row_etki) in enumerate(etki_matrix):
+                if row_etki.any():
+                    etkilenen_caps = e_cap_sub[row_etki]
+                    en_buyuk_idx   = np.argmax(etkilenen_caps)
+                    # Orijinal etkinlik indeksini bul
+                    ev_idx = np.where(mask_ev)[0][np.where(row_etki)[0][en_buyuk_idx]]
+
+                    is_event[t_indices[ti]]         = 1
+                    event_attendance[t_indices[ti]] = ev_caps[ev_idx]
+                    event_radius_km[t_indices[ti]]  = ev_radii[ev_idx]
+                    hours_to_event[t_indices[ti]]   = 0.0
+
+        # Etkinlik olmayan trafik noktaları için hours_to_event hesapla
+        no_event_mask = mask_t & (is_event == 0)
+        if no_event_mask.any():
+            # Gelecekteki etkinlikler
+            future_mask = ev_starts > hour_pd
+            if future_mask.any():
+                t_lat_sub = t_lats[no_event_mask]
+                t_lon_sub = t_lons[no_event_mask]
+                e_lat_sub = ev_lats[future_mask]
+                e_lon_sub = ev_lons[future_mask]
+                e_rad_sub = ev_radii[future_mask]
+                e_sta_sub = ev_starts[future_mask]
+
+                # (N_t, N_e) mesafe matrisi
+                dist_matrix = haversine_km_vektor(t_lat_sub, t_lon_sub,
+                                                   e_lat_sub, e_lon_sub)
+                etki_matrix = dist_matrix <= e_rad_sub[None, :]
+
+                t_indices = np.where(no_event_mask)[0]
+                for ti, row_etki in enumerate(etki_matrix):
+                    if row_etki.any():
+                        # Etki yarıçapı içindeki en yakın gelecek etkinlik
+                        yakin_idx  = np.where(row_etki)[0][0]
+                        diff_hours = (pd.Timestamp(e_sta_sub[yakin_idx]) - hour_pd
+                                      ).total_seconds() / 3600
+                        if diff_hours < hours_to_event[t_indices[ti]]:
+                            hours_to_event[t_indices[ti]] = round(diff_hours, 2)
 
     trafik_df["is_event"]         = is_event
     trafik_df["event_attendance"] = event_attendance
