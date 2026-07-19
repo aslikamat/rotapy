@@ -1,0 +1,17 @@
+# ─── Temel veri işleme ────────────────────────────────────────
+pandas>=2.0.0
+numpy<2.0.0
+pyarrow>=14.0.0
+
+# ─── Web scraping ─────────────────────────────────────────────
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+playwright>=1.40.0
+
+# ─── Makine öğrenmesi ─────────────────────────────────────────
+tensorflow>=2.16.0
+scikit-learn==1.5.2
+scipy==1.13.1
+
+# ─── Görselleştirme ───────────────────────────────────────────
+matplotlib>=3.7.0
