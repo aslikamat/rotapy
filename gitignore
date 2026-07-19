@@ -1,0 +1,41 @@
+# ─── Veri dosyaları ───────────────────────────────────────────
+*.parquet
+*.csv
+*.h5
+*.pkl
+*.keras
+
+# ─── Model klasörü ────────────────────────────────────────────
+besiktas_lstm_model/
+en_iyi_model.keras
+
+# ─── Ham indirmeler ───────────────────────────────────────────
+indirilen/
+tomtom_data/
+
+# ─── Kalite raporları (çalışınca yeniden üretilir) ────────────
+*_kalite.json
+veri_kalite_raporu.json
+
+# ─── Python cache ─────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ─── macOS ────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+
+# ─── VS Code ──────────────────────────────────────────────────
+.vscode/
+*.code-workspace
+
+# ─── Jupyter ──────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── Ortam dosyaları ──────────────────────────────────────────
+.env
+.env.local
+*.key
