@@ -134,7 +134,7 @@ işlenerek en az yoğun rotayı belirler.
 
 Etkinlik etkisi **mesafe bazlı yarıçap** ile hesaplanır:
 ```
-yarıçap (km) = 0.5 × √(kapasite / 500)
+yarıçap (km) = 0.5 × √(kapasite / 500) (?)
 ```
 
 ---
