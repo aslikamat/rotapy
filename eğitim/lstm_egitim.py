@@ -1,8 +1,10 @@
 """
 LSTM Model Eğitimi — Beşiktaş Trafik Yoğunluğu Tahmini
 =========================================================
-lstm_egitim_verisi.parquet dosyasını okur, LSTM modelini eğitir
-ve eğitilmiş modeli kaydeder.
+DB şemasıyla uyumlu versiyon:
+  Hedef   : congestion_ratio (LSTM_DESTEKLİ_İBB_BEŞİKTAŞ_VERİSİ tablosu)
+  Gruplama: geohash (lokasyon bazlı sequence)
+  Feature : birlestirme.py LSTM_COLS ile örtüşür
 
 Kurulum:
     pip install pandas pyarrow numpy scikit-learn tensorflow matplotlib
@@ -14,19 +16,11 @@ Kullanım:
     python lstm_egitim.py --test                       # 3 epoch hızlı test
 
 Çıktı:
-    besiktas_lstm_model/     → eğitilmiş model klasörü
-    egitim_grafigi.png       → loss + tahmin grafiği
-    model_sonuclari.json     → MAE, RMSE, doğruluk raporu
-
-Birleştirme scriptindeki sütunlarla uyumlu:
-    Anahtar : geohash, date_hour
-    Hedef   : density
-    Feature : hour_sin/cos, day_sin/cos, is_weekend,
-              lag_1h, lag_24h, lag_7d, ma_3h, speed,
-              is_event, event_attendance, event_radius_km, hours_to_event,
-              temperature_c, precipitation_mm, wind_speed_kmh,
-              cloud_cover_pct, humidity_pct,
-              is_rainy, is_snowy, is_stormy, is_bad_weather
+    besiktas_lstm_model/besiktas_lstm.keras  → eğitilmiş model
+    besiktas_lstm_model/scaler_X.pkl         → feature scaler (inference için)
+    besiktas_lstm_model/scaler_y.pkl         → hedef scaler (inference için)
+    besiktas_lstm_model/egitim_grafigi.png   → loss + tahmin grafiği
+    besiktas_lstm_model/model_sonuclari.json → MAE, RMSE raporu
 """
 
 import pandas as pd
@@ -40,33 +34,44 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # =============================================================================
-# AYARLAR
+# AYARLAR — birlestirme.py LSTM_COLS ile uyumlu
 # =============================================================================
 
-# birlestirme.py'deki LSTM_COLS ile örtüşen feature sütunları
+# LSTM_DESTEKLİ_İBB_BEŞİKTAŞ_VERİSİ + HavaDurumuVerisi sütunları
 FEATURE_COLS = [
-    # Döngüsel zaman — hour/day yerine sin/cos kullanılıyor
+    # Döngüsel zaman
     "hour_sin", "hour_cos", "day_sin", "day_cos", "is_weekend",
-    # Trafik geçmişi
-    "lag_1h", "lag_24h", "lag_7d", "ma_3h", "speed",
-    # Etkinlik — event_radius_km eklendi
-    "is_event", "event_attendance", "event_radius_km", "hours_to_event",
-    # Hava — cloud_cover_pct, humidity_pct, is_stormy eklendi
-    "temperature_c", "precipitation_mm", "wind_speed_kmh",
-    "cloud_cover_pct", "humidity_pct",
-    "is_rainy", "is_snowy", "is_stormy", "is_bad_weather",
+    # Trafik geçmişi — DB şeması sütun isimleri
+    "lag_1h", "lag_24h", "lag_7d", "ma_3h",
+    "current_speed",           # DB: current_speed (eski: speed)
+    # Etkinlik — DB şeması sütun isimleri
+    "is_event_time",           # DB: is_event_time boolean (eski: is_event)
+    "event_attendance",
+    "event_radius_km",         # yeni eklendi
+    "hours_to_event",
+    # Hava — HavaDurumuVerisi sütunları
+    "temperature_c",
+    "precipitation_mm",
+    "wind_speed_kmh",
+    "cloud_cover_pct",         # yeni eklendi
+    "humidity_pct",            # yeni eklendi
+    "is_rainy",
+    "is_snowy",
+    "is_stormy",               # yeni eklendi
+    "is_bad_weather",
 ]
 
-# Hedef değişken
-TARGET_COL = "density"
+# Hedef değişken — DB şeması: congestion_ratio (eski: density)
+TARGET_COL = "congestion_ratio"
 
-# Gruplandırma anahtarı — farklı lokasyonların sequence'ları karışmasın
-GROUP_COL = "geohash"   # birlestirme.py'de geohash var, location kaldırıldı
+# Gruplama anahtarı — DB şeması: geohash (eski: location)
+GROUP_COL = "geohash"
 
 # Kaç önceki saate bakarak tahmin yapılsın
-SEQUENCE_LEN = 6   # 24'ten 6'ya indirildi — rota önerisi için 30-60dk yeterli
+# 6 saat: rota önerisi için yeterli, 24 gereksiz uzun
+SEQUENCE_LEN = 6
 
-# Train / Validation / Test oranları (zamana göre sıralı bölünür)
+# Train / Validation / Test — ZAMANA GÖRE SIRALI (rastgele değil)
 TRAIN_RATIO = 0.70
 VAL_RATIO   = 0.15
 # TEST_RATIO = 0.15 (kalan)
@@ -80,22 +85,40 @@ def load_and_prepare(path: str) -> pd.DataFrame:
     print(f"\n[1/5] Veri yükleniyor: {path}")
     df = pd.read_parquet(path)
     df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.sort_values(["datetime", GROUP_COL] if GROUP_COL in df.columns
-                        else "datetime").reset_index(drop=True)
+    df = df.sort_values(
+        ["datetime", GROUP_COL] if GROUP_COL in df.columns else "datetime"
+    ).reset_index(drop=True)
     print(f"  {len(df):,} satır, {len(df.columns)} sütun")
+
+    # Boolean sütunları float'a çevir (LSTM sayısal girdi ister)
+    bool_cols = ["is_event_time", "is_weekend", "road_closure",
+                 "is_rainy", "is_snowy", "is_stormy", "is_foggy", "is_bad_weather"]
+    for col in bool_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(float)
 
     # Eksik feature sütunları varsa 0 ile doldur
     missing = [c for c in FEATURE_COLS if c not in df.columns]
     for col in missing:
         print(f"  [UYARI] '{col}' sütunu yok → 0 ile dolduruldu")
-        df[col] = 0
+        df[col] = 0.0
 
     # Hedef sütun kontrolü
     if TARGET_COL not in df.columns:
-        raise ValueError(f"Hedef sütun '{TARGET_COL}' bulunamadı!")
+        # Fallback: density'den congestion_ratio türet
+        if "density" in df.columns:
+            print(f"  [BİLGİ] '{TARGET_COL}' yok, 'density'den türetiliyor...")
+            max_d = df["density"].quantile(0.95)
+            df[TARGET_COL] = (df["density"] / max_d).clip(0, 1).round(4)
+        else:
+            raise ValueError(
+                f"Hedef sütun '{TARGET_COL}' bulunamadı!\n"
+                f"birlestirme.py'yi yeni DB şemasıyla çalıştırın."
+            )
 
-    print(f"  Hedef   : {TARGET_COL} — ort: {df[TARGET_COL].mean():.1f}, "
-          f"max: {df[TARGET_COL].max():.0f}")
+    print(f"  Hedef   : {TARGET_COL} — "
+          f"ort: {df[TARGET_COL].mean():.3f}, "
+          f"max: {df[TARGET_COL].max():.3f}")
     if GROUP_COL in df.columns:
         print(f"  Geohash : {df[GROUP_COL].nunique()} benzersiz lokasyon")
 
@@ -111,26 +134,18 @@ def create_sequences(df: pd.DataFrame, scaler_X: MinMaxScaler,
     """
     LSTM için (X, y) sequence çiftleri oluşturur.
 
-    Her X : son SEQUENCE_LEN saatin feature'ları  → shape: (SEQUENCE_LEN, n_features)
-    Her y : bir sonraki saatin density değeri      → shape: (1,)
-
-    Gruplandırma geohash üzerinden yapılır:
-    farklı lokasyonların zaman serileri birbirine karışmaz.
+    Gruplama: geohash — farklı lokasyonların sequence'ları karışmaz.
+    Her X : son SEQUENCE_LEN saatin feature'ları  (6 saat, 21 feature)
+    Her y : bir sonraki saatin congestion_ratio    (0-1 arası)
     """
     print(f"\n[2/5] Sequence oluşturuluyor (pencere: {SEQUENCE_LEN} saat)...")
 
     X_all, y_all = [], []
 
-    if GROUP_COL in df.columns:
-        groups = df[GROUP_COL].unique()
-    else:
-        groups = ["_all"]
+    groups = df[GROUP_COL].unique() if GROUP_COL in df.columns else ["_all"]
 
     for grp in groups:
-        if GROUP_COL in df.columns:
-            loc_df = df[df[GROUP_COL] == grp].copy()
-        else:
-            loc_df = df.copy()
+        loc_df = df[df[GROUP_COL] == grp].copy() if GROUP_COL in df.columns else df.copy()
 
         if len(loc_df) < SEQUENCE_LEN + 1:
             continue
@@ -144,15 +159,18 @@ def create_sequences(df: pd.DataFrame, scaler_X: MinMaxScaler,
             y_all.append(targets[i])
 
     if not X_all:
-        raise ValueError("Hiç sequence oluşturulamadı — veri çok az olabilir.")
+        raise ValueError(
+            "Hiç sequence oluşturulamadı!\n"
+            f"Veri çok az veya GROUP_COL='{GROUP_COL}' sütunu eksik olabilir."
+        )
 
     X = np.array(X_all, dtype=np.float32)
     y = np.array(y_all, dtype=np.float32).reshape(-1, 1)
 
-    print(f"  X shape : {X.shape}  (örnekler, zaman adımı, feature)")
+    print(f"  X shape : {X.shape}  (örnekler, zaman_adımı, feature)")
     print(f"  y shape : {y.shape}")
+    print(f"  y aralık: {y.min():.3f} — {y.max():.3f}  (congestion_ratio)")
 
-    # Ölçeklendirme — 0-1 arasına sıkıştır
     X_2d = X.reshape(-1, X.shape[-1])
     if fit_scalers:
         X_scaled = scaler_X.fit_transform(X_2d)
@@ -171,12 +189,11 @@ def create_sequences(df: pd.DataFrame, scaler_X: MinMaxScaler,
 
 def split_data(X: np.ndarray, y: np.ndarray) -> tuple:
     """
-    Veriyi zamana göre sıralı üçe böler — rastgele değil.
+    Veriyi zamana göre sıralı üçe böler — rastgele DEĞİL.
 
     Neden sıralı?
       Model geçmişten geleceği tahmin ediyor.
-      Rastgele bölünürse model 2024 Aralık'tan öğrenip
-      2023 Ocak'ı tahmin edebilir — gerçek dünyada işe yaramaz.
+      Rastgele bölünürse model gelecekten öğrenmiş olur — gerçekçi değil.
 
     Train  %70 → model bunlardan öğrenir
     Val    %15 → her epoch sonunda kontrol, EarlyStopping buraya bakar
@@ -205,28 +222,25 @@ def split_data(X: np.ndarray, y: np.ndarray) -> tuple:
 def build_model(input_shape: tuple):
     """
     İki katmanlı LSTM + Dropout + Dense çıkış.
-    Projenizin yöntem bölümüyle birebir örtüşüyor.
+    input_shape = (SEQUENCE_LEN, n_features) = (6, 21)
 
-    input_shape = (SEQUENCE_LEN, n_features)
-                = (6, 21)  — 6 saat geriye bak, 21 feature
+    Projenizin yöntem bölümüyle birebir:
+      - LSTM katman 1: 64 nöron (genel örüntüler)
+      - LSTM katman 2: 32 nöron (ince örüntüler)
+      - Dropout %20: ezber önler
+      - BatchNormalization: eğitimi stabilize eder
+      - Dense çıkış: tek sayı (congestion_ratio tahmini)
     """
     from tensorflow.keras.models import Sequential
     from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
     from tensorflow.keras.optimizers import Adam
 
     model = Sequential([
-        # 1. LSTM katmanı — genel örüntüleri öğrenir
         LSTM(units=64, return_sequences=True, input_shape=input_shape),
         Dropout(0.2),
-
-        # 2. LSTM katmanı — daha ince örüntüleri öğrenir
         LSTM(units=32, return_sequences=False),
         Dropout(0.2),
-
-        # Normalizasyon — eğitimi stabilize eder
         BatchNormalization(),
-
-        # Çıkış — tek sayı: tahmin edilen yoğunluk
         Dense(16, activation="relu"),
         Dense(1),
     ])
@@ -256,26 +270,16 @@ def train(model, X_train, y_train, X_val, y_val,
     print(f"  Parametre : {model.count_params():,}")
 
     callbacks = [
-        # Val loss 5 epoch iyileşmezse dur, en iyi ağırlıkları geri yükle
         EarlyStopping(
-            monitor="val_loss",
-            patience=5,
-            restore_best_weights=True,
-            verbose=1,
+            monitor="val_loss", patience=5,
+            restore_best_weights=True, verbose=1,
         ),
-        # Öğrenme hızını 3 epoch sonra yarıya indir
         ReduceLROnPlateau(
-            monitor="val_loss",
-            factor=0.5,
-            patience=3,
-            verbose=1,
+            monitor="val_loss", factor=0.5, patience=3, verbose=1,
         ),
-        # Her epoch sonunda en iyi modeli diske yaz
         ModelCheckpoint(
-            "en_iyi_model.keras",
-            monitor="val_loss",
-            save_best_only=True,
-            verbose=0,
+            "en_iyi_model.keras", monitor="val_loss",
+            save_best_only=True, verbose=0,
         ),
     ]
 
@@ -304,32 +308,34 @@ def evaluate(model, X_test, y_test, scaler_y, history):
 
     mae  = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    mape = np.mean(np.abs((y_true - y_pred) / np.maximum(y_true, 1))) * 100
+    mape = np.mean(np.abs((y_true - y_pred) / np.maximum(y_true, 0.01))) * 100
 
-    mean_val     = y_true.mean()
-    hata_orani   = (mae / mean_val) * 100
+    # congestion_ratio 0-1 arası → hata oranı doğrudan yüzde olarak yorumlanır
+    hata_orani   = mae * 100   # 0.05 MAE → %5 hata
     hedefe_ulasi = hata_orani < 20
 
     results = {
         "mae":           round(float(mae), 4),
         "rmse":          round(float(rmse), 4),
         "mape":          round(float(mape), 2),
-        "hata_orani":    round(float(hata_orani), 2),
+        "hata_orani_pct": round(float(hata_orani), 2),
         "hedef_mae20":   hedefe_ulasi,
-        "test_ornekler": len(y_test),
-        "sequence_len":  SEQUENCE_LEN,
+        "test_ornekler": int(len(y_test)),
+        "target_col":    TARGET_COL,
         "group_col":     GROUP_COL,
+        "sequence_len":  SEQUENCE_LEN,
+        "feature_cols":  FEATURE_COLS,
     }
 
-    print(f"\n  {'='*45}")
-    print(f"  SONUÇLAR")
-    print(f"  {'='*45}")
-    print(f"  MAE         : {mae:.4f} araç")
-    print(f"  RMSE        : {rmse:.4f} araç")
-    print(f"  MAPE        : %{mape:.2f}")
-    print(f"  Hata oranı  : %{hata_orani:.2f}")
-    print(f"  Hedef (%20) : {'✅ BAŞARILI' if hedefe_ulasi else '❌ Henüz değil'}")
-    print(f"  {'='*45}")
+    print(f"\n  {'='*50}")
+    print(f"  SONUÇLAR (hedef: {TARGET_COL})")
+    print(f"  {'='*50}")
+    print(f"  MAE              : {mae:.4f}  (congestion birim)")
+    print(f"  RMSE             : {rmse:.4f}")
+    print(f"  MAPE             : %{mape:.2f}")
+    print(f"  Hata oranı       : %{hata_orani:.2f}")
+    print(f"  Hedef (%20 altı) : {'✅ BAŞARILI' if hedefe_ulasi else '❌ Henüz değil'}")
+    print(f"  {'='*50}")
 
     return results, y_pred, y_true
 
@@ -338,8 +344,8 @@ def evaluate(model, X_test, y_test, scaler_y, history):
 # KAYDET
 # =============================================================================
 
-def save_results(model, scaler_X, scaler_y, results, history,
-                 y_pred, y_true, output_dir: str):
+def save_results(model, scaler_X, scaler_y, results,
+                 history, y_pred, y_true, output_dir: str):
     import pickle
     import json
 
@@ -348,29 +354,26 @@ def save_results(model, scaler_X, scaler_y, results, history,
     # Model
     model_path = f"{output_dir}/besiktas_lstm.keras"
     model.save(model_path)
-    print(f"\n  Model kaydedildi      : {model_path}")
+    print(f"\n  Model         : {model_path}")
 
-    # Scaler'lar — inference sırasında aynı ölçeklendirme gerekli
+    # Scaler'lar — inference sırasında AYNI ölçeklendirme gerekli
     with open(f"{output_dir}/scaler_X.pkl", "wb") as f:
         pickle.dump(scaler_X, f)
     with open(f"{output_dir}/scaler_y.pkl", "wb") as f:
         pickle.dump(scaler_y, f)
-    print(f"  Scaler'lar kaydedildi : {output_dir}/scaler_X.pkl, scaler_y.pkl")
+    print(f"  Scaler'lar    : {output_dir}/scaler_X.pkl, scaler_y.pkl")
 
     # Sonuç raporu
-    results["feature_cols"] = FEATURE_COLS
-    results["target_col"]   = TARGET_COL
-
-    def to_serializable(obj):
-        if isinstance(obj, (np.bool_, bool)):   return bool(obj)
-        if isinstance(obj, np.integer):          return int(obj)
-        if isinstance(obj, np.floating):         return float(obj)
+    def to_json(obj):
+        if isinstance(obj, (np.bool_, bool)):  return bool(obj)
+        if isinstance(obj, np.integer):         return int(obj)
+        if isinstance(obj, np.floating):        return float(obj)
         return obj
 
-    results_clean = {k: to_serializable(v) for k, v in results.items()}
+    results_clean = {k: to_json(v) for k, v in results.items()}
     with open(f"{output_dir}/model_sonuclari.json", "w", encoding="utf-8") as f:
         json.dump(results_clean, f, ensure_ascii=False, indent=2)
-    print(f"  Rapor kaydedildi      : {output_dir}/model_sonuclari.json")
+    print(f"  Rapor         : {output_dir}/model_sonuclari.json")
 
     # Eğitim grafiği
     try:
@@ -382,26 +385,24 @@ def save_results(model, scaler_X, scaler_y, results, history,
         axes[0].set_title("Eğitim Loss (MSE)")
         axes[0].set_xlabel("Epoch")
         axes[0].set_ylabel("MSE")
-        axes[0].legend()
-        axes[0].grid(True)
+        axes[0].legend(); axes[0].grid(True)
 
         n_show = min(500, len(y_true))
         axes[1].plot(y_true[:n_show], label="Gerçek",  alpha=0.7)
         axes[1].plot(y_pred[:n_show], label="Tahmin",  alpha=0.7)
-        axes[1].set_title(f"Tahmin vs Gerçek (ilk {n_show} örnek)")
+        axes[1].set_title(f"Tahmin vs Gerçek — congestion_ratio (ilk {n_show} örnek)")
         axes[1].set_xlabel("Zaman adımı")
-        axes[1].set_ylabel("Araç yoğunluğu (density)")
-        axes[1].legend()
-        axes[1].grid(True)
+        axes[1].set_ylabel("congestion_ratio (0-1)")
+        axes[1].legend(); axes[1].grid(True)
 
         plt.tight_layout()
         plt.savefig(f"{output_dir}/egitim_grafigi.png", dpi=150)
         plt.close()
-        print(f"  Grafik kaydedildi     : {output_dir}/egitim_grafigi.png")
+        print(f"  Grafik        : {output_dir}/egitim_grafigi.png")
     except Exception as e:
         print(f"  [UYARI] Grafik oluşturulamadı: {e}")
 
-    print(f"\n  Tüm çıktılar: {output_dir}/")
+    print(f"\n  Tüm çıktılar  : {output_dir}/")
 
 
 # =============================================================================
@@ -410,7 +411,7 @@ def save_results(model, scaler_X, scaler_y, results, history,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Beşiktaş LSTM Trafik Yoğunluğu Modeli"
+        description="Beşiktaş LSTM — congestion_ratio tahmini (DB şeması uyumlu)"
     )
     parser.add_argument("--data",   default="lstm_egitim_verisi.parquet")
     parser.add_argument("--epochs", type=int, default=30)
@@ -422,20 +423,23 @@ def main():
 
     if args.test:
         args.epochs = 3
-        print("[TEST MODU] 3 epoch ile hızlı test yapılıyor...")
+        print("[TEST MODU] 3 epoch — hızlı kontrol")
 
     try:
         import tensorflow as tf
-        print(f"\n  TensorFlow: {tf.__version__}")
+        print(f"\n  TensorFlow : {tf.__version__}")
+        print(f"  Hedef      : {TARGET_COL}")
+        print(f"  Gruplama   : {GROUP_COL}")
+        print(f"  Sequence   : {SEQUENCE_LEN} saat")
+        print(f"  Feature    : {len(FEATURE_COLS)} sütun")
     except ImportError:
-        print("\n[HATA] TensorFlow kurulu değil!")
-        print("pip install tensorflow")
+        print("\n[HATA] TensorFlow kurulu değil: pip install tensorflow")
         return
 
     # 1. Veri
     df = load_and_prepare(args.data)
 
-    # 2. Scaler'lar
+    # 2. Scaler
     scaler_X = MinMaxScaler()
     scaler_y = MinMaxScaler()
 
@@ -451,24 +455,18 @@ def main():
     model.summary()
 
     # 6. Eğit
-    history = train(
-        model, X_train, y_train, X_val, y_val,
-        epochs=args.epochs, batch_size=args.batch
-    )
+    history = train(model, X_train, y_train, X_val, y_val,
+                    epochs=args.epochs, batch_size=args.batch)
 
     # 7. Değerlendir
     results, y_pred, y_true = evaluate(model, X_test, y_test, scaler_y, history)
 
     # 8. Kaydet
-    save_results(
-        model, scaler_X, scaler_y,
-        results, history, y_pred, y_true,
-        output_dir=args.out
-    )
+    save_results(model, scaler_X, scaler_y,
+                 results, history, y_pred, y_true, output_dir=args.out)
 
     print(f"\n[TAMAMLANDI]")
-    print(f"  Sonraki adım: modeli sistem/ klasörüne kopyalayın")
-    print(f"  python ../sistem/tahmin.py --model {args.out}/besiktas_lstm.keras")
+    print(f"  Sonraki adım: python ../sistem/tahmin.py --model {args.out}/besiktas_lstm.keras")
 
 
 if __name__ == "__main__":
