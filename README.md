@@ -152,4 +152,12 @@ yarıçap (km) = 0.5 × √(kapasite / 500) (?)
 ['sxk9s3', 'sxk9s5', 'sxk9s6', 'sxk9s2', 'sxk9s8', 'sxk9s0', 'sxk9kk', 'sxk9se', 'sxk9sk', 'sxk9kt', 'sxk9kr', 'sxk9e9', 'sxk9s9', 'sxk9sh', 'sxk97s', 'sxk9s4', 'sxk9ec', 'sxk9ks', 'sxk9ef', 'sxk9kx', 'sxk9eb', 'sxk9km', 'sxk9ed', 'sxk9s7', 'sxk9eu', 'sxk9kp', 'sxk97t', 'sxk9s1', 'sxk97y', 'sxk9sd', 'sxk97w', 'sxk9ee', 'sxk9es', 'sxk9ss', 'sxk97z', 'sxk9kh', 'sxk9e8', 'sxk9kw', 'sxk97x', 'sxk9eg', 'sxk9kq', 'sxk9kj', 'sxk9kn', 'sxk97v', 'sxk97u']
 
 
+## Yararlandığımız kaynaklar:
+**LSTM**
+- https://colah.github.io/posts/2015-08-Understanding-LSTMs/
+-  https://web.stanford.edu/class/cs379c/archive/2018/class_messages_listing/content/Artificial_Neural_Network_Technology_Tutorials/OlahLSTM-NEURAL-NETWORK-TUTORIAL-15.pdf
+
+
+
+
 
