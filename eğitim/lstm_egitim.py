@@ -143,7 +143,7 @@ def create_sequences(df: pd.DataFrame, scaler_X: MinMaxScaler,
     X_all, y_all = [], []
 
     groups = df[GROUP_COL].unique() if GROUP_COL in df.columns else ["_all"]
-
+# Group column = geohash olacak bu durumda
     for grp in groups:
         loc_df = df[df[GROUP_COL] == grp].copy() if GROUP_COL in df.columns else df.copy()
 
