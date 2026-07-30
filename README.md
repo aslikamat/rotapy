@@ -157,7 +157,7 @@ yarıçap (km) = 0.5 × √(kapasite / 500) (?)
 - https://colah.github.io/posts/2015-08-Understanding-LSTMs/ 
 -  https://web.stanford.edu/class/cs379c/archive/2018/class_messages_listing/content/Artificial_Neural_Network_Technology_Tutorials/OlahLSTM-NEURAL-NETWORK-TUTORIAL-15.pdf
 
-- **Stacked LSTM* - https://ieeexplore.ieee.org/abstract/document/8288312/metrics#metrics
+- **Stacked LSTM** - https://ieeexplore.ieee.org/abstract/document/8288312/metrics#metrics
 
 
 
