@@ -158,6 +158,12 @@ yarıçap (km) = 0.5 × √(kapasite / 500) (?)
 -  https://web.stanford.edu/class/cs379c/archive/2018/class_messages_listing/content/Artificial_Neural_Network_Technology_Tutorials/OlahLSTM-NEURAL-NETWORK-TUTORIAL-15.pdf
 
 - **Stacked LSTM** - https://ieeexplore.ieee.org/abstract/document/8288312/metrics#metrics
+- https://aapm.onlinelibrary.wiley.com/doi/epdf/10.1002/acm2.13558
+
+- **BDLSTM** - https://arxiv.org/pdf/1801.02143
+- https://www.sciencedirect.com/science/article/pii/S0968090X20305891?casa_token=9V9YvRwsZPEAAAAA:p5OTLmr3ro9iGaF9hXYgjIMllR1tpYMUvhNuP_SIHAoSDJ-hA5Wi6fTgbnmJYFfkD1hFQPJKcSs
+
+- 
 
 
 
