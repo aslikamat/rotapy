@@ -99,7 +99,7 @@ python anlik_hava_durumu.py --mod anlik
 
 | Kaynak | Veri | Dönem |
 |---|---|---|
-| İBB Açık Veri Portalı | Saatlik trafik yoğunluğu | 2020-2025 |
+| İBB Açık Veri Portalı | Saatlik trafik yoğunluğu | 2020-2025 | https://data.ibb.gov.tr/dataset/hourly-traffic-density-data-set
 | Radar Türkiye | 16 platform birleşik etkinlik | 2020-günümüz |
 | Open-Meteo | Saatlik hava durumu | 1940-günümüz |
 | TomTom Flow API | Anlık segment bazlı trafik | Gerçek zamanlı |
