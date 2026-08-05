@@ -4,23 +4,25 @@ Geçmiş Etkinlik Scraper — LSTM Model Eğitimi İçin
 Beşiktaş ilçesindeki geçmiş etkinlikleri birden fazla kaynaktan çeker
 ve LSTM modeline beslenmeye hazır tek bir CSV üretir.
 
-Kaynaklar:
-  1. Radar Türkiye     — 16 platform birleşik (Biletix, Passo, Bubilet vb.)
-  2. Ticketmaster API  — Uluslararası etkinlikler (--tm-key ile)
-  3. Setlist.fm API    — Geçmiş konserler 2015'e kadar (--sf-key ile)
-  4. Mackolik          — Geçmiş BJK maç fikstürleri (otomatik)
+Kaynaklar (yalnızca gerçekten GEÇMİŞ veri sağlayan kaynaklar kullanılıyor):
+  1. Setlist.fm API    — Geçmiş konserler, kullanıcı katkılı arşiv (--sf-key ile, ÜCRETSİZ)
+  2. Mackolik           — arsiv.mackolik.com üzerinden geçmiş BJK ev sahibi maçları (otomatik)
+  3. Ticketmaster API  — opsiyonel (--tm-key), ancak bu bir "keşif/satış" API'si
+                          olduğundan geçmiş etkinlikler için genelde boş sonuç döner.
+
+  NOT: Radar Türkiye desteği kod tabanından kaldırıldı. Radar sadece
+  güncel/yaklaşan etkinlikleri listeliyor — geçmişe dönük bir arşivi yok,
+  bu yüzden bu script'in amacına (geçmiş veri) hizmet etmiyordu.
 
 Kurulum:
-    pip install requests beautifulsoup4 pandas playwright
-    playwright install chromium
+    pip install requests beautifulsoup4 pandas pyarrow
 
 Kullanım:
-    python gecmis_etkinlik_scraper.py                          # Radar + Mackolik
-    python gecmis_etkinlik_scraper.py --tm-key KEY             # + Ticketmaster
-    python gecmis_etkinlik_scraper.py --sf-key KEY             # + Setlist.fm
-    python gecmis_etkinlik_scraper.py --demo                   # internet gerekmez
-    python gecmis_etkinlik_scraper.py --start 2022-01-01       # tarih aralığı
-                                      --end   2024-12-31
+    python gecmis_etkinlik_scraper.py --sf-key KEY              # Setlist.fm + Mackolik
+    python gecmis_etkinlik_scraper.py                            # sadece Mackolik
+    python gecmis_etkinlik_scraper.py --demo                    # internet gerekmez
+    python gecmis_etkinlik_scraper.py --start 2022-01-01        # tarih aralığı
+                                      --end   2024-12-31         --sf-key KEY
 
 Çıktı sütunları (LSTM için):
     event_date, start_datetime, end_datetime,
@@ -436,11 +438,24 @@ def fetch_ticketmaster_history(
 # ─────────────────────────────────────────────────────────────────────────────
 
 SETLIST_VENUES = [
-    "Vodafone Park", "Zorlu PSM",
+    "Vodafone Park", "Zorlu Center PSM",
     "IF Performance Hall", "Harbiye Cemil Topuzlu",
 ]
 
-def fetch_setlistfm(api_key: str, start_date: str = "2020-01-01") -> list[dict]:
+def fetch_setlistfm(
+    api_key:    str = 	"dWqSQA5hA4HJtnaqV8krv_R7sB6k6VUuiRxU",
+    start_date: str = "2020-01-01",
+    end_date:   str = "2099-12-31",
+) -> list[dict]:
+    """
+    setlist.fm REST API — gerçek, kullanıcı katkılı geçmiş konser arşivi.
+    Ücretsiz API key gerekli (setlist.fm hesabı > API Settings). Ticari
+    olmayan kullanım için ücretsiz; hız limiti standart anahtarlarda
+    ~2 istek/sn, günde ~1440 istek.
+    Venue setlist'leri varsayılan olarak EN YENİDEN EN ESKİYE sıralanır;
+    bu yüzden start_date'in altına inince döngüden çıkıyoruz, ama
+    end_date'in üstündeki (çok yakın tarihli) kayıtları da atlıyoruz.
+    """
     print("\n[Setlist.fm] Geçmiş konserler çekiliyor...")
 
     headers = {
@@ -456,14 +471,22 @@ def fetch_setlistfm(api_key: str, start_date: str = "2020-01-01") -> list[dict]:
             params={"name": venue_name, "cityName": "Istanbul"},
             headers=headers, timeout=10,
         )
+        if r.status_code == 401:
+            print("  [HATA] API key geçersiz (401 Unauthorized). "
+                  "--sf-key'e gerçek setlist.fm anahtarınızı verdiğinizden emin olun.")
+            break  # anahtar geçersizse diğer mekanlar için de deneme boşuna
         if r.status_code != 200:
+            print(f"  → '{venue_name}': mekan araması başarısız (HTTP {r.status_code})")
             continue
         venues = r.json().get("venue", [])
         if not venues:
+            print(f"  → '{venue_name}': setlist.fm'de bu isimde mekan bulunamadı")
             continue
 
         venue_id = venues[0]["id"]
-        page     = 1
+        found_name = venues[0].get("name", venue_name)
+        page = 1
+        venue_count = 0
 
         while True:
             r2 = requests.get(
@@ -489,6 +512,8 @@ def fetch_setlistfm(api_key: str, start_date: str = "2020-01-01") -> list[dict]:
 
                 if iso_date < start_date:
                     break
+                if iso_date > end_date:
+                    continue  # bu sayfada daha eski kayıtlar da olabilir, devam et
 
                 artist   = sl.get("artist", {}).get("name", "")
                 vi       = venue_info(venue_name)
@@ -510,86 +535,158 @@ def fetch_setlistfm(api_key: str, start_date: str = "2020-01-01") -> list[dict]:
                     "estimated_attendance": vi["cap"],
                     "url":                  sl.get("url", ""),
                 })
+                venue_count += 1
 
             total = int(data.get("total", 0))
             items = int(data.get("itemsPerPage", 20))
             if page * items >= total:
                 break
             page += 1
-            time.sleep(0.5)
+            time.sleep(0.6)
 
-    print(f"  → {len(events)} konser")
-    return events
+        print(f"  → '{venue_name}' (setlist.fm'de: '{found_name}'): {venue_count} konser")
+
+    print(f"  → toplam {len(events)} konser")
+    return deduplicate(events)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. MACKOLİK — BJK geçmiş maç fikstürü
 # ─────────────────────────────────────────────────────────────────────────────
 
+MACKOLIK_BASE     = "https://arsiv.mackolik.com"
+MACKOLIK_TEAM_ID   = 3            # Beşiktaş — arsiv.mackolik.com/Takim/3/Besiktas
+MACKOLIK_TEAM_SLUG = "Besiktas"   # maç linklerindeki takım kısaltması (örn: /Mac/123/Besiktas-Eyupspor)
+
+# Bu başlıkların altındaki maçlar dahil EDİLMEZ — hazırlık/dostluk maçları
+# çoğunlukla yurt dışı kamplarda / nötr sahalarda oynanıyor, Vodafone Park'ta değil.
+MACKOLIK_EXCLUDE_SECTIONS = ["hazırlık", "kulüpler", "hazirlik"]
+
+
+def _mackolik_is_home_slug(slug: str) -> bool | None:
+    """
+    Maç linkindeki slug'a bakarak Beşiktaş'ın ev sahibi olup olmadığını belirler.
+    Slug formatı: {EvSahibi}-{Deplasman} — örn. 'Besiktas-Eyupspor' (ev),
+    'Alanyaspor-Besiktas' (deplasman). Beşiktaş'ın kendi slug'ı tek parça
+    ('Besiktas') olduğu için baş/son eşleşmesi güvenilir.
+    """
+    if slug.startswith(MACKOLIK_TEAM_SLUG + "-"):
+        return True
+    if slug.endswith("-" + MACKOLIK_TEAM_SLUG):
+        return False
+    return None  # emin değiliz — bu maçı atlayacağız
+
+
 def scrape_bjk_fixtures(
     start_year: int = 2020,
     end_year:   int = 2024,
 ) -> list[dict]:
-    """Mackolik'ten BJK'nın Vodafone Park'taki geçmiş maçlarını çeker."""
+    """
+    arsiv.mackolik.com'dan Beşiktaş'ın geçmiş EV SAHİBİ maçlarını (Vodafone Park /
+    Tüpraş Stadyumu) çeker. Sayfa yapısı doğrulandı:
+      https://arsiv.mackolik.com/Takim/3/Besiktas/{yıl}/{yıl+1}
+    Maç linkleri şu formatta: /Mac/{id}/{EvSahibiSlug}-{DeplasmanSlug}
+    NOT: Bu fonksiyon canlı siteye bağımlıdır. Mackolik zaman zaman HTML
+    yapısını değiştirebilir — çalışmazsa önce tek bir sezonu elle
+    (requests + view-source) kontrol edip select0r'ları güncelleyin.
+    """
     from bs4 import BeautifulSoup
 
-    print("\n[Mackolik] BJK geçmiş maçlar çekiliyor...")
+    print("\n[Mackolik] BJK geçmiş EV SAHİBİ maçları çekiliyor (arsiv.mackolik.com)...")
 
     session = requests.Session()
-    session.headers["User-Agent"] = (
-        "Mozilla/5.0 Chrome/123.0.0.0 Safari/537.36"
-    )
+    session.headers.update({
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36"),
+        "Accept-Language": "tr-TR,tr;q=0.9",
+    })
 
     events = []
-    vi     = venue_info("vodafone park")
+    vi = venue_info("vodafone park")
+    date_re = re.compile(r'\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b')
+    mac_href_re = re.compile(r'/Mac/(\d+)/([A-Za-z0-9İıŞşĞğÜüÖöÇç-]+)')
 
     for season in range(start_year, end_year + 1):
-        url = f"https://www.mackolik.com/takim/besiktas/mac-sonuclari/{season}-{season+1}"
+        url = f"{MACKOLIK_BASE}/Takim/{MACKOLIK_TEAM_ID}/{MACKOLIK_TEAM_SLUG}/{season}/{season+1}"
+        season_count = 0
         try:
-            r    = session.get(url, timeout=15)
+            r = session.get(url, timeout=15)
+            r.raise_for_status()
             soup = BeautifulSoup(r.text, "html.parser")
 
-            # Maç satırlarını bul
-            rows = soup.select("tr[class*='match'], div[class*='match-row'], table tr")
-            for row in rows:
-                text = row.get_text(" ", strip=True)
+            # Maç listesinin olduğu ana konteyner — "Maçlar" sekmesi
+            container = soup.select_one("#matchesTab") or soup
 
-                # Ev sahibi mi? (sadece Vodafone Park maçları)
-                if "bjk" not in text.lower() and "beşiktaş" not in text.lower():
-                    continue
-                # Deplasman maçlarını at
-                home_indicators = ["vodafone", "istanbul", "(ev)"]
-                if not any(hi in text.lower() for hi in home_indicators):
-                    # Emin değilsek dahil et, yanlış pozitif daha iyi
-                    pass
+            current_section = ""
+            # container.descendants: her düğümü TAM OLARAK BİR KEZ, belge sırasına
+            # göre dolaşır. find_all(True) + iç find() kombinasyonu aynı linki
+            # birden fazla ata seviyesinde tekrar tekrar işleyip kopya kayıt
+            # üretiyordu — bu yüzden düz, tek geçişli descendants kullanıyoruz.
+            for el in container.descendants:
+                if not getattr(el, "name", None):
+                    continue  # NavigableString vs. — sadece Tag'lerle ilgileniyoruz
 
-                # Tarih çıkar
-                date_m = re.search(r'(\d{2})[./](\d{2})[./](\d{4})', text)
-                if not date_m:
-                    date_m = re.search(r'(\d{4})-(\d{2})-(\d{2})', text)
-                if not date_m:
+                # Turnuva/bölüm başlığı mı? (Puan-Durumu linkine sahip başlıklar)
+                if el.name == "a" and el.get("href") and "/Puan-Durumu/" in el["href"]:
+                    txt = el.get_text(strip=True)
+                    if txt:
+                        current_section = txt
                     continue
 
+                # Maç linki mi?
+                if el.name != "a" or not el.get("href"):
+                    continue
+                href = el["href"]
+                m = mac_href_re.search(href)
+                if not m:
+                    continue
+
+                # Hazırlık/dostluk maçlarını atla — Vodafone Park dışı olma ihtimali yüksek
+                if any(kw in current_section.lower() for kw in MACKOLIK_EXCLUDE_SECTIONS):
+                    continue
+
+                is_home = _mackolik_is_home_slug(m.group(2))
+                if not is_home:
+                    continue  # deplasman maçı ya da belirsiz — atla
+
+                # Tarihi bulmak için en yakın "satır" atasını arıyoruz — ata
+                # zincirinde tarih deseni (DD.MM.YYYY) içeren ilk elemanı kullan.
+                row_text = ""
+                node = el
+                for _ in range(4):  # en fazla 4 seviye yukarı çık
+                    node = node.parent
+                    if node is None:
+                        break
+                    row_text = node.get_text(" ", strip=True)
+                    if date_re.search(row_text):
+                        break
+                date_m = date_re.search(row_text)
+                if not date_m:
+                    continue
+
+                day, mon, year = (int(x) for x in date_m.groups())
                 try:
-                    if len(date_m.group(1)) == 4:
-                        iso = f"{date_m.group(1)}-{date_m.group(2)}-{date_m.group(3)}"
-                    else:
-                        iso = f"{date_m.group(3)}-{date_m.group(2)}-{date_m.group(1)}"
-                    dt = datetime.strptime(iso, "%Y-%m-%d")
-                except Exception:
+                    dt = datetime(year, mon, day)
+                except ValueError:
                     continue
+                iso = dt.strftime("%Y-%m-%d")
 
-                # Saat çıkar
-                time_m = re.search(r'\b(\d{2}):(\d{2})\b', text)
-                time_str = f"{time_m.group(1)}:{time_m.group(2)}" if time_m else "19:00"
+                # Saat verisi bu sayfada genelde yok — sezon boyu tipik akşam
+                # maç saati olan 19:00'ı varsayılan olarak kullanıyoruz.
+                time_m = re.search(r'\b(\d{1,2}):(\d{2})\b', row_text)
+                time_str = f"{int(time_m.group(1)):02d}:{time_m.group(2)}" if time_m else "19:00"
 
-                start_dt = _to_datetime(iso, time_str) or \
-                           datetime(dt.year, dt.month, dt.day, 19, 0)
+                start_dt = _to_datetime(iso, time_str) or datetime(year, mon, day, 19, 0)
                 end_dt   = start_dt + timedelta(hours=2.5)
 
+                # Rakip ismi — slug'ın "Besiktas-" kısmından sonrasını okunabilir hale getir
+                opponent = m.group(2)[len(MACKOLIK_TEAM_SLUG) + 1:].replace("-", " ")
+                name = f"Beşiktaş - {opponent} Maçı".strip() if opponent else "Beşiktaş Maçı"
+
+                match_id = m.group(1)
                 events.append({
                     "source":               "Mackolik",
-                    "name":                 "Beşiktaş Maçı",
+                    "name":                 name,
                     "category":             "Spor",
                     "start_date_hour":      _date_hour(start_dt, iso),
                     "end_date_hour":        _date_hour(end_dt, ""),
@@ -600,16 +697,17 @@ def scrape_bjk_fixtures(
                     "lon":                  vi["lon"],
                     "geohash":              encode_geohash(vi["lat"], vi["lon"]),
                     "estimated_attendance": vi["cap"],
-                    "url":                  url,
+                    "url":                  f"{MACKOLIK_BASE}/Mac/{match_id}/{m.group(2)}",
                 })
+                season_count += 1
 
-            print(f"  → {season}-{season+1} sezonu: {len([e for e in events if str(season) in e['event_date']])} maç")
+            print(f"  → {season}-{season+1} sezonu: {season_count} ev sahibi maç")
             time.sleep(1)
 
         except Exception as e:
             print(f"  → {season}-{season+1}: [HATA] {e}")
 
-    return events
+    return deduplicate(events)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -708,7 +806,7 @@ def _to_datetime(date_str: str, time_str: str) -> datetime | None:
 def _filter_by_date(events: list, start: str, end: str) -> list:
     return [
         e for e in events
-        if start <= e.get("event_date", "9999") <= end
+        if start <= e.get("start_date_hour", e.get("event_date", "9999"))[:10] <= end
     ]
 
 def _guess_category(name: str, url: str = "") -> str:
@@ -725,8 +823,10 @@ def deduplicate(events: list) -> list:
     seen = set()
     out  = []
     for e in events:
-        key = (e["event_date"], e["venue"][:20].lower(),
-               e["name"][:15].lower())
+        # start_date_hour veya event_date — her iki formata uyumlu
+        tarih = e.get("start_date_hour", e.get("event_date", ""))[:10]
+        key   = (tarih, e.get("venue", "")[:20].lower(),
+                 e.get("name", "")[:15].lower())
         if key not in seen:
             seen.add(key)
             out.append(e)
@@ -755,10 +855,16 @@ def main():
         print("[DEMO] Örnek geçmiş etkinlik verisi üretiliyor...")
         all_events = generate_demo(args.start, args.end)
     else:
-        # 1. Radar Türkiye
-        all_events += scrape_radar_turkiye(args.start, args.end)
+        # NOT: Radar Türkiye kasıtlı olarak devre dışı bırakıldı. Radar sadece
+        # güncel/yaklaşan etkinlikleri listeliyor — geçmişe dönük bir arşivi
+        # yok, bu yüzden geçmiş veri toplama amacıyla kullanılamıyor.
+        # (fonksiyon kod tabanında duruyor, isterseniz ileride GÜNCEL/gelecek
+        # etkinlik toplama işi için ayrı bir script'te kullanılabilir.)
 
-        # 2. Ticketmaster (key varsa)
+        # 1. Ticketmaster (key varsa) — UYARI: Discovery API bir "keşif/satış"
+        #    sistemidir, geçmişte tamamlanmış etkinlikleri arşivlemez. Bu
+        #    yüzden geçmiş tarih aralıkları için genellikle boş sonuç döner.
+        #    Yine de --tm-key verilirse denenir (zararı yok).
         if args.tm_key:
             all_events += fetch_ticketmaster_history(
                 args.tm_key, args.start, args.end
@@ -766,27 +872,32 @@ def main():
         else:
             print("\n[Ticketmaster] --tm-key verilmedi, atlandı.")
 
-        # 3. Setlist.fm (key varsa)
+        # 2. Setlist.fm (key varsa) — asıl geçmiş konser kaynağımız
         if args.sf_key:
-            all_events += fetch_setlistfm(args.sf_key, args.start)
+            all_events += fetch_setlistfm(args.sf_key, args.start, args.end)
         else:
             print("[Setlist.fm] --sf-key verilmedi, atlandı.")
 
-        # 4. Mackolik — BJK maçları (her zaman)
+        # 3. Mackolik — BJK ev sahibi maçları (her zaman, arsiv.mackolik.com)
         start_year = int(args.start[:4])
         end_year   = int(args.end[:4])
         all_events += scrape_bjk_fixtures(start_year, end_year)
 
+        # Mackolik sezon bazlı çalışıyor (örn. 2024/2025 sezonu Ağustos 2024 -
+        # Mayıs 2025 arası sürer), bu yüzden istenen --start/--end aralığının
+        # dışına taşan maçları burada kırpıyoruz.
+        all_events = _filter_by_date(all_events, args.start, args.end)
+
     # Yineleme temizle + tarihe göre sırala
     all_events = deduplicate(all_events)
-    all_events.sort(key=lambda e: e.get("start_datetime") or e.get("event_date") or "")
+    all_events.sort(key=lambda e: e.get("start_datetime") or e.get("start_date_hour") or e.get("event_date") or "")
 
     df = pd.DataFrame(all_events)
     df.to_parquet(args.out, index=False, engine="pyarrow")
 
     # Kalite raporu
     kalite = {
-        "kaynak":               "Radar TR + Ticketmaster + Setlist.fm + Mackolik",
+        "kaynak":               "Setlist.fm + Mackolik (+ opsiyonel Ticketmaster)",
         "toplam_etkinlik":      int(len(df)),
         "kaynak_dagilimi":      {k: int(v) for k, v in df["source"].value_counts().items()} if not df.empty else {},
         "kategori_dagilimi":    {k: int(v) for k, v in df["category"].value_counts().items()} if not df.empty else {},
@@ -806,7 +917,8 @@ def main():
     print(f"{'='*60}")
     print(f"  Toplam etkinlik : {len(df)}")
     if not df.empty:
-        print(f"  Tarih aralığı   : {df['event_date'].min()} → {df['event_date'].max()}")
+        tarih_col = "start_date_hour" if "start_date_hour" in df.columns else "event_date"
+        print(f"  Tarih aralığı   : {str(df[tarih_col].min())[:10]} → {str(df[tarih_col].max())[:10]}")
         print(f"  Kaynaklar       : {df['source'].value_counts().to_dict()}")
         print(f"  Kategoriler     : {df['category'].value_counts().to_dict()}")
     print(f"  Çıktı           : {args.out}")
