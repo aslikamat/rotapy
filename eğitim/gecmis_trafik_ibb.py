@@ -3,26 +3,28 @@
 ===========================================================================
 Ocak 2020 – Ocak 2025 arası 61 aylık İBB trafik verisini indirir,
 Beşiktaş'a ait kayıtları filtreler ve LSTM modeline hazır tek bir
-CSV dosyası üretir.
+parquet dosyası üretir.
 
 Kaynak: https://data.ibb.gov.tr/dataset/hourly-traffic-density-data-set
 Lisans: İBB Açık Veri Lisansı (akademik kullanım serbest)
 
 Kurulum:
-    pip install requests pandas
+    pip install requests pandas pyarrow
 
 Kullanım:
-    python ibb_trafik_besiktas.py               # tüm ayları indir
-    python ibb_trafik_besiktas.py --quick       # sadece 2023-2024 (hızlı test)
-    python ibb_trafik_besiktas.py --sample      # 1 ay indir, yapıyı gör
+    python gecmis_trafik_ibb.py               # tüm ayları indir
+    python gecmis_trafik_ibb.py --quick       # sadece 2023-2024
+    python gecmis_trafik_ibb.py --sample      # 1 ay indir, yapıyı gör
 
 Çıktı:
     besiktas_trafik_lstm.parquet → LSTM'e hazır ana dosya
-    indirilen/                 → ham aylık CSV'ler (yedek)
+    trafik_kalite.json           → veri kalite raporu
+    indirilen/                   → ham aylık CSV'ler (cache)
 """
 
 import requests
 import pandas as pd
+import numpy as np
 import os
 import time
 import argparse
@@ -31,11 +33,10 @@ from pathlib import Path
 from io import StringIO
 
 # =============================================================================
-# GEOHASH — harici kütüphane gerektirmeyen saf Python implementasyonu
-# anlik_trafik_tomtom_alansal.py ile AYNI implementasyon — join tutarlılığı
+# GEOHASH
 # =============================================================================
 
-_GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+_GEOHASH_BASE32   = "0123456789bcdefghjkmnpqrstuvwxyz"
 GEOHASH_PRECISION = 7
 
 
@@ -67,9 +68,8 @@ def encode_geohash(lat: float, lon: float, precision: int = GEOHASH_PRECISION) -
     return "".join(geohash)
 
 
-
 # =============================================================================
-# İNDİRİLECEK DOSYALAR — Ocak 2020 → Ocak 2025
+# İNDİRİLECEK DOSYALAR
 # =============================================================================
 
 BASE_URL = (
@@ -78,7 +78,6 @@ BASE_URL = (
     "{resource_id}/download/traffic_density_{ym}.csv"
 )
 
-# resource_id'ler İBB portalından alındı (sayfa kaynak kodu)
 MONTHLY_FILES = [
     ("202001", "db9c7fb3-e7f9-435a-92f4-1b917e357821"),
     ("202002", "5fb30ee1-e079-4865-a8cd-16efe2be8352"),
@@ -143,23 +142,17 @@ MONTHLY_FILES = [
     ("202501", "57cb067b-1a0b-460b-8342-7884bd4537e8"),
 ]
 
-# Sadece 2023-2024 (--quick modu)
 QUICK_FILES = [f for f in MONTHLY_FILES if f[0].startswith(("2023", "2024"))]
 
 # =============================================================================
 # BEŞİKTAŞ FİLTRESİ
-# Veri setindeki GEOFENCE_LAT / GEOFENCE_LON veya DISTRICT sütununa göre
 # =============================================================================
 
-# Beşiktaş bbox — bu koordinatlar içindeki kayıtlar alınır
 BESIKTAS_BBOX = {
-    "lat_min": 41.025,
-    "lat_max": 41.075,
-    "lon_min": 28.980,
-    "lon_max": 29.040,
+    "lat_min": 41.025, "lat_max": 41.075,
+    "lon_min": 28.980, "lon_max": 29.040,
 }
 
-# Beşiktaş ile ilişkili string etiketler (DISTRICT/LOCATION sütunu varsa)
 BESIKTAS_KEYWORDS = [
     "beşiktaş", "besiktas", "barbaros", "çırağan", "ciragan",
     "vodafone", "zorlu", "levent", "balmumcu", "ortaköy", "ortakoy",
@@ -169,24 +162,18 @@ BESIKTAS_KEYWORDS = [
 
 
 def is_besiktas_row(row: pd.Series, lat_col: str, lon_col: str) -> bool:
-    """Koordinat veya isim bazlı Beşiktaş filtresi."""
-    # Koordinat bazlı (öncelikli)
     try:
         lat = float(row[lat_col])
         lon = float(row[lon_col])
-        bb = BESIKTAS_BBOX
+        bb  = BESIKTAS_BBOX
         if bb["lat_min"] <= lat <= bb["lat_max"] and \
            bb["lon_min"] <= lon <= bb["lon_max"]:
             return True
     except (ValueError, TypeError):
         pass
-
-    # İsim bazlı (yedek)
     for col in row.index:
-        val = str(row[col]).lower()
-        if any(kw in val for kw in BESIKTAS_KEYWORDS):
+        if any(kw in str(row[col]).lower() for kw in BESIKTAS_KEYWORDS):
             return True
-
     return False
 
 
@@ -195,24 +182,16 @@ def is_besiktas_row(row: pd.Series, lat_col: str, lon_col: str) -> bool:
 # =============================================================================
 
 def download_month(ym: str, resource_id: str, cache_dir: Path) -> pd.DataFrame | None:
-    """
-    Tek aylık CSV'yi indirir (önce cache'e bakar).
-    Dönen DataFrame ham veridir, henüz filtrelenmemiş.
-    """
     cache_file = cache_dir / f"traffic_density_{ym}.csv"
-
-    # Cache varsa yeniden indirme
     if cache_file.exists():
         try:
             return pd.read_csv(cache_file, low_memory=False)
         except Exception:
             pass
-
     url = BASE_URL.format(resource_id=resource_id, ym=ym)
     try:
         r = requests.get(url, timeout=60)
         r.raise_for_status()
-        # Cache'e kaydet
         cache_file.write_bytes(r.content)
         return pd.read_csv(StringIO(r.text), low_memory=False)
     except requests.exceptions.Timeout:
@@ -224,36 +203,27 @@ def download_month(ym: str, resource_id: str, cache_dir: Path) -> pd.DataFrame |
 
 
 # =============================================================================
-# SÜTUN TESPITI
-# İBB farklı dönemlerde farklı sütun adları kullanmış olabilir
+# SÜTUN TESPİTİ
 # =============================================================================
 
 COLUMN_ALIASES = {
-    "lat":        ["LATITUDE", "LAT", "latitude", "lat", "GEOFENCE_LAT",
-                   "ENLEM", "enlem"],
-    "lon":        ["LONGITUDE", "LON", "longitude", "lon", "GEOFENCE_LON",
-                   "BOYLAM", "boylam"],
-    "datetime":   ["DATE_TIME", "DATETIME", "date_time", "datetime",
-                   "MEASUREMENT_TIME", "TARIH_SAAT", "tarih_saat"],
-    "speed":      ["SPEED", "speed", "HIZ", "hiz", "AVG_SPEED",
-                   "AVERAGE_SPEED"],
-    "density":    ["NUMBER_OF_VEHICLES", "DENSITY", "density",
-                   "ARAC_SAYISI", "VEHICLE_COUNT", "COUNT",
-                   "MINIMUM_SPEED", "NUMBER_OF_VEHICLES_ANALYZED"],
-    "location":   ["GEOFENCE_NAME", "LOCATION", "DISTRICT", "location",
-                   "BOLGE", "ROAD_NAME"],
+    "lat":      ["LATITUDE", "LAT", "latitude", "lat", "GEOFENCE_LAT", "ENLEM", "enlem"],
+    "lon":      ["LONGITUDE", "LON", "longitude", "lon", "GEOFENCE_LON", "BOYLAM", "boylam"],
+    "datetime": ["DATE_TIME", "DATETIME", "date_time", "datetime",
+                 "MEASUREMENT_TIME", "TARIH_SAAT", "tarih_saat"],
+    "speed":    ["SPEED", "speed", "HIZ", "hiz", "AVG_SPEED", "AVERAGE_SPEED"],
+    "density":  ["NUMBER_OF_VEHICLES", "DENSITY", "density", "ARAC_SAYISI",
+                 "VEHICLE_COUNT", "COUNT", "MINIMUM_SPEED", "NUMBER_OF_VEHICLES_ANALYZED"],
+    "location": ["GEOFENCE_NAME", "LOCATION", "DISTRICT", "location", "BOLGE", "ROAD_NAME"],
 }
 
 
 def detect_col(df: pd.DataFrame, key: str) -> str | None:
-    """Sütun adı tahmin et."""
     for alias in COLUMN_ALIASES.get(key, []):
         if alias in df.columns:
             return alias
-    # Kısmi eşleşme
-    key_lower = key.lower()
     for col in df.columns:
-        if key_lower in col.lower():
+        if key.lower() in col.lower():
             return col
     return None
 
@@ -263,66 +233,72 @@ def detect_col(df: pd.DataFrame, key: str) -> str | None:
 # =============================================================================
 
 def process_month(df: pd.DataFrame, ym: str) -> pd.DataFrame:
-    """
-    Ham aylık veriyi alır:
-      1. Sütunları tespit et
-      2. Beşiktaş filtrele
-      3. LSTM feature'larını ekle
-      4. Standart sütun adlarıyla döndür
-    """
-    lat_col  = detect_col(df, "lat")
-    lon_col  = detect_col(df, "lon")
-    dt_col   = detect_col(df, "datetime")
-    spd_col  = detect_col(df, "speed")
-    den_col  = detect_col(df, "density")
-    loc_col  = detect_col(df, "location")
+    lat_col = detect_col(df, "lat")
+    lon_col = detect_col(df, "lon")
+    dt_col  = detect_col(df, "datetime")
+    spd_col = detect_col(df, "speed")
+    den_col = detect_col(df, "density")
+    loc_col = detect_col(df, "location")
 
-    # Koordinat sütunu yoksa filtreleme yapamayız
-    if not lat_col or not lon_col:
-        # Yine de isim bazlı deneyelim
-        mask = df.apply(
-            lambda r: any(
-                kw in str(r.values).lower() for kw in BESIKTAS_KEYWORDS
-            ), axis=1
+    # ── Vektörize Beşiktaş filtresi — satır satır döngü YOK ─────────────────
+    if lat_col and lon_col:
+        lats = pd.to_numeric(df[lat_col], errors="coerce")
+        lons = pd.to_numeric(df[lon_col], errors="coerce")
+        bb   = BESIKTAS_BBOX
+        mask = (
+            lats.between(bb["lat_min"], bb["lat_max"]) &
+            lons.between(bb["lon_min"], bb["lon_max"])
         )
-        df_b = df[mask].copy()
+        # Koordinat eşleşmeyenleri isim bazlı dene (küçük subset)
+        no_coord = mask[~mask].index
+        if len(no_coord) > 0 and loc_col:
+            loc_mask = df.loc[no_coord, loc_col].astype(str).str.lower().apply(
+                lambda v: any(kw in v for kw in BESIKTAS_KEYWORDS)
+            )
+            mask.loc[no_coord[loc_mask]] = True
     else:
+        # Koordinat yok — sadece isim bazlı (yavaş ama nadir durum)
         mask = df.apply(
-            lambda r: is_besiktas_row(r, lat_col, lon_col), axis=1
+            lambda r: any(kw in str(r.values).lower() for kw in BESIKTAS_KEYWORDS),
+            axis=1
         )
-        df_b = df[mask].copy()
 
+    df_b = df[mask].copy()
     if df_b.empty:
         return pd.DataFrame()
 
-    # Standart sütunlar
     out = pd.DataFrame()
 
-    # Tarih/saat
+    # datetime
     if dt_col:
-        out["datetime"] = pd.to_datetime(df_b[dt_col], errors="coerce")
+        out["datetime"] = pd.to_datetime(df_b[dt_col].values, errors="coerce")
     else:
-        # Tarih yok — ay bilgisinden üret
         out["datetime"] = pd.to_datetime(f"{ym[:4]}-{ym[4:]}-01")
 
+    # date_hour
     out["date_hour"]  = out["datetime"].dt.strftime("%Y-%m-%d %H")
-    out["weekday"]    = out["datetime"].dt.weekday   # 0=Pzt, 6=Paz
+    out["weekday"]    = out["datetime"].dt.weekday
     out["is_weekend"] = (out["weekday"] >= 5).astype(int)
 
-    # Konum — geohash eklendi, location kaldırıldı
-    out["lat"]     = pd.to_numeric(df_b[lat_col], errors="coerce") if lat_col else None
-    out["lon"]     = pd.to_numeric(df_b[lon_col], errors="coerce") if lon_col else None
-    out["geohash"] = out.apply(
-        lambda r: encode_geohash(r["lat"], r["lon"])
-        if pd.notna(r.get("lat")) and pd.notna(r.get("lon")) else "",
-        axis=1
-    )
+    # Konum + geohash — vektörize
+    lat_vals = pd.to_numeric(df_b[lat_col].values, errors="coerce") if lat_col else None
+    lon_vals = pd.to_numeric(df_b[lon_col].values, errors="coerce") if lon_col else None
+    out["lat"] = lat_vals
+    out["lon"] = lon_vals
 
-    # Trafik metrikleri
-    out["speed"]    = pd.to_numeric(df_b[spd_col],  errors="coerce") if spd_col  else None
-    out["density"]  = pd.to_numeric(df_b[den_col],  errors="coerce") if den_col  else None
+    if lat_vals is not None and lon_vals is not None:
+        out["geohash"] = [
+            encode_geohash(la, lo) if (la == la and lo == lo) else ""
+            for la, lo in zip(lat_vals, lon_vals)
+        ]
+    else:
+        out["geohash"] = ""
 
-    # Orijinal sütunların tamamını da ekle (bilgi kaybı olmasın)
+    # Trafik
+    out["speed"]   = pd.to_numeric(df_b[spd_col].values, errors="coerce") if spd_col else None
+    out["density"] = pd.to_numeric(df_b[den_col].values, errors="coerce") if den_col else None
+
+    # Ek sütunlar
     for col in df_b.columns:
         if col not in [lat_col, lon_col, dt_col, spd_col, den_col, loc_col]:
             safe = col.lower().replace(" ", "_")
@@ -333,37 +309,94 @@ def process_month(df: pd.DataFrame, ym: str) -> pd.DataFrame:
 
 
 # =============================================================================
+# EKSİK VERİ TEMİZLEME
+# =============================================================================
+
+def clean_and_fill(df: pd.DataFrame, target_col: str = "target") -> tuple:
+    """
+    1. 1-2 saatlik eksiklikleri weekday + geohash ortalamasıyla doldur
+    2. 3+ ardışık eksik saati at
+    Tuple döner: (df, sayac_dict)
+    """
+    print(f"  Temizlik öncesi : {len(df):,} satır")
+
+    if target_col not in df.columns or df[target_col].isna().sum() == 0:
+        print(f"  Eksik değer yok, doldurma atlandı.")
+        return df, {"eksik_once": 0, "dolduruldu": 0, "kalan_eksik": 0}
+
+    eksik_once = df[target_col].isna().sum()
+    group_col  = "geohash" if "geohash" in df.columns else "lat"
+
+    ortalama = (
+        df.groupby(["weekday", group_col])[target_col]
+        .mean()
+        .rename("ortalama")
+        .reset_index()
+    )
+    df = df.merge(ortalama, on=["weekday", group_col], how="left")
+
+    filled = []
+    for loc, grp in df.groupby(group_col):
+        grp = grp.sort_values("datetime").copy()
+        grp["eksik_ardisik"] = (
+            grp[target_col].isna()
+            .astype(int)
+            .groupby((~grp[target_col].isna()).cumsum())
+            .cumsum()
+        )
+        grp = grp[grp["eksik_ardisik"] < 3].copy()
+        mask_eksik = grp[target_col].isna()
+        grp.loc[mask_eksik, target_col] = grp.loc[mask_eksik, "ortalama"]
+        filled.append(grp)
+
+    df = pd.concat(filled, ignore_index=True).drop(
+        columns=["ortalama", "eksik_ardisik"], errors="ignore"
+    )
+
+    eksik_sonra = df[target_col].isna().sum()
+    dolduruldu  = eksik_once - eksik_sonra
+
+    print(f"  Dolduruldu      : {dolduruldu:,} eksik değer (ortalama ile)")
+    print(f"  Hâlâ eksik      : {eksik_sonra:,} (3+ ardışık blok atıldı)")
+    print(f"  Temizlik sonrası: {len(df):,} satır")
+
+    return df, {
+        "eksik_once":  int(eksik_once),
+        "dolduruldu":  int(dolduruldu),
+        "kalan_eksik": int(eksik_sonra),
+    }
+
+
+# =============================================================================
 # LSTM FEATURE MÜHENDİSLİĞİ
 # =============================================================================
 
 def add_lstm_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    LSTM için ek zaman serisi özellikler ekler:
-      - Saatin sinüs/kosinüs dönüşümü (döngüsel zaman)
-      - Haftanın günü sinüs/kosinüs
-      - Önceki saatin yoğunluğu (lag_1h)
-      - 24 saat önceki yoğunluk (lag_24h)
-      - 7 gün önceki aynı saat (lag_7d)
-      - 3 saatlik hareketli ortalama
+    Döngüsel zaman + lag özellikleri ekler.
+    hour sütunu YOK — datetime veya date_hour'dan türetilir.
     """
-    import numpy as np
-
     df = df.sort_values("datetime").reset_index(drop=True)
 
+    # Saati datetime'dan türet (hour sütunu artık yok)
+    if "datetime" in df.columns:
+        hour = df["datetime"].dt.hour
+    else:
+        hour = pd.to_datetime(df["date_hour"], format="%Y-%m-%d %H").dt.hour
+
     # Döngüsel zaman encoding
-    df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
-    df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
+    df["hour_sin"] = np.sin(2 * np.pi * hour / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * hour / 24)
     df["day_sin"]  = np.sin(2 * np.pi * df["weekday"] / 7)
     df["day_cos"]  = np.cos(2 * np.pi * df["weekday"] / 7)
 
-    # Hedef değişken olarak density veya speed kullan
+    # Hedef değişken
     target_col = "density" if "density" in df.columns and df["density"].notna().any() \
                  else "speed"
 
     if target_col in df.columns:
         df["target"] = df[target_col]
-        # Lag özellikleri (lokasyon bazında)
-        group_col = "geohash" if "geohash" in df.columns else "lat"
+        group_col    = "geohash" if "geohash" in df.columns else "lat"
         for loc, grp in df.groupby(group_col):
             idx = grp.index
             df.loc[idx, "lag_1h"]  = grp[target_col].shift(1).values
@@ -378,90 +411,17 @@ def add_lstm_features(df: pd.DataFrame) -> pd.DataFrame:
 # ANA FONKSİYON
 # =============================================================================
 
-
-# =============================================================================
-# EKSİK VERİ TEMİZLEME VE DOLDURMA
-# =============================================================================
-
-def clean_and_fill(df: pd.DataFrame, target_col: str = "target") -> pd.DataFrame:
-    """
-    1. Tüm 24 saati koru (gece verisi LSTM için önemli)
-    2. 1-2 saatlik eksiklikleri aynı weekday+hour ortalamasıyla doldur
-    3. 3+ ardışık eksik saati at
-    """
-    import numpy as np
-
-    print(f"  Temizlik öncesi : {len(df):,} satır")
-
-    if target_col not in df.columns or df[target_col].isna().sum() == 0:
-        print(f"  Eksik değer yok, doldurma atlandı.")
-        return df
-
-    eksik_once = df[target_col].isna().sum()
-
-    # 2. Weekday + hour ortalaması tablosu
-    hour_col = "hour" if "hour" in df.columns else df["datetime"].dt.hour
-    group_col = "geohash" if "geohash" in df.columns else "lat"
-    ortalama = (
-        df.groupby(["weekday", group_col])[target_col]
-        .mean()
-        .rename("ortalama")
-        .reset_index()
-    )
-    df = df.merge(ortalama, on=["weekday", group_col], how="left")
-
-    # 3. Ardışık eksik bloklarını tespit et (geohash bazında)
-    filled = []
-    for loc, grp in df.groupby(group_col):
-        grp = grp.sort_values("datetime").copy()
-
-        # Ardışık eksik sayacı
-        grp["eksik_ardisik"] = (
-            grp[target_col].isna()
-            .astype(int)
-            .groupby((~grp[target_col].isna()).cumsum())
-            .cumsum()
-        )
-
-        # 3+ ardışık eksik → at
-        grp = grp[grp["eksik_ardisik"] < 3].copy()
-
-        # 1-2 eksik → ortalama ile doldur
-        mask_eksik = grp[target_col].isna()
-        grp.loc[mask_eksik, target_col] = grp.loc[mask_eksik, "ortalama"]
-
-        filled.append(grp)
-
-    df = pd.concat(filled, ignore_index=True).drop(
-        columns=["ortalama", "eksik_ardisik"], errors="ignore"
-    )
-
-    eksik_sonra  = df[target_col].isna().sum()
-    silinen      = eksik_once - (len(df) - (len(df) - eksik_sonra))
-    dolduruldu   = eksik_once - eksik_sonra
-
-    print(f"  Dolduruldu      : {dolduruldu:,} eksik değer (ortalama ile)")
-    print(f"  Hâlâ eksik      : {eksik_sonra:,} (3+ ardışık blok atıldı)")
-    print(f"  Temizlik sonrası: {len(df):,} satır")
-
-    return df, {
-        "eksik_once":      int(eksik_once),
-        "dolduruldu":      int(dolduruldu),
-        "kalan_eksik":     int(eksik_sonra),
-    }
-
 def main():
     parser = argparse.ArgumentParser(
         description="İBB Trafik Verisi — Beşiktaş Filtresi & LSTM Hazırlayıcı"
     )
-    parser.add_argument("--quick",  action="store_true",
-                        help="Sadece 2023-2024 verilerini indir (hızlı test)")
-    parser.add_argument("--sample", action="store_true",
-                        help="Sadece 1 ay indir, veri yapısını göster")
+    parser.add_argument("--quick",    action="store_true",
+                        help="Sadece 2023-2024 (hızlı test)")
+    parser.add_argument("--sample",   action="store_true",
+                        help="Sadece 1 ay indir")
     parser.add_argument("--no-cache", action="store_true",
-                        help="Cache'i yok say, hepsini yeniden indir")
-    parser.add_argument("--out", default="besiktas_trafik_lstm.parquet",
-                        help="Çıktı dosya adı")
+                        help="Cache'i yok say")
+    parser.add_argument("--out",      default="besiktas_trafik_lstm.parquet")
     args = parser.parse_args()
 
     cache_dir = Path("indirilen")
@@ -471,67 +431,65 @@ def main():
         for f in cache_dir.glob("*.csv"):
             f.unlink()
 
-    files = MONTHLY_FILES
     if args.quick:
         files = QUICK_FILES
-        print(f"[Hızlı mod] Sadece 2023-2024: {len(files)} ay")
+        print(f"[Hızlı mod] 2023-2024: {len(files)} ay")
     elif args.sample:
-        files = [MONTHLY_FILES[-1]]  # En son ay
+        files = [MONTHLY_FILES[-1]]
         print(f"[Örnek mod] Tek ay: {files[0][0]}")
     else:
+        files = MONTHLY_FILES
         print(f"[Tam mod] {len(files)} ay, Ocak 2020 → Ocak 2025")
 
     print(f"Cache dizini: {cache_dir}/")
     print(f"Çıktı: {args.out}\n")
 
     all_frames = []
+    ham_satir_toplam = 0
     for i, (ym, resource_id) in enumerate(files, 1):
         print(f"[{i:>2}/{len(files)}] {ym} indiriliyor...", end=" ")
         df_raw = download_month(ym, resource_id, cache_dir)
 
         if df_raw is None:
-            print("ATLANДИ")
+            print("ATLANDI")
             continue
 
+        ham_satir_toplam += len(df_raw)
         print(f"{len(df_raw):>8,} satır ham →", end=" ")
         df_b = process_month(df_raw, ym)
 
         if df_b.empty:
             print("Beşiktaş kaydı YOK")
-            # Sütunları göster — filtreleme sorununu anlamak için
-            print(f"          Sütunlar: {list(df_raw.columns[:8])}")
+            print(f"  Sütunlar: {list(df_raw.columns[:8])}")
         else:
             print(f"{len(df_b):>6,} Beşiktaş kaydı ✓")
             all_frames.append(df_b)
 
-        time.sleep(0.3)  # İBB sunucusuna nazik ol
+        time.sleep(0.3)
 
     if not all_frames:
         print("\n[SONUÇ] Hiç Beşiktaş kaydı bulunamadı.")
-        print("Olası sebep: veri setinde 'DISTRICT' veya koordinat sütunu yok.")
-        print("→ İBB ile iletişime geçin: data.ibb.gov.tr/contact")
         return
 
     print(f"\n[Birleştirme] {len(all_frames)} ay birleştiriliyor...")
     merged = pd.concat(all_frames, ignore_index=True)
 
-    # Tarihe göre sırala
     if "datetime" in merged.columns:
         merged = merged.sort_values("datetime")
 
-    # Eksik veri temizleme ve doldurma
-    target = "density" if "density" in merged.columns and merged["density"].notna().any() else "speed"
+    # Temizlik
+    target = "density" if "density" in merged.columns and merged["density"].notna().any() \
+             else "speed"
     print(f"\n[Temizlik] Eksik veri dolduruluyor (hedef: {target})...")
     merged, temizlik_sayac = clean_and_fill(merged, target_col=target)
 
-    # LSTM feature'ları ekle
+    # LSTM feature'ları
     print("\n[Feature mühendisliği] Lag ve döngüsel özellikler ekleniyor...")
     merged = add_lstm_features(merged)
 
     # Kaydet
     merged.to_parquet(args.out, index=False, engine="pyarrow")
 
-    # Özet
     print(f"\n{'='*60}")
     print(f"  TAMAMLANDI")
     print(f"{'='*60}")
@@ -541,7 +499,6 @@ def main():
     print(f"  Çıktı         : {args.out}")
     print(f"{'='*60}")
 
-    # Sample göster
     print("\nİlk 5 satır:")
     show_cols = ["datetime", "date_hour", "geohash", "lat", "lon",
                  "speed", "density", "is_weekend", "target"]
@@ -549,18 +506,15 @@ def main():
     print(merged[show_cols].head().to_string(index=False))
 
     # Kalite raporu
-    ham_toplam   = sum(len(pd.read_csv(f, nrows=0).columns) and 1
-                       for f in Path("indirilen").glob("*.csv"))
     kalite = {
-        "kaynak":               "IBB Acik Veri",
-        "indirilen_ay_sayisi":  len(all_frames),
-        "ham_satir_toplam":     int(sum(df_b is not None and len(df_b) or 0
-                                        for df_b in all_frames)),
+        "kaynak":                  "IBB Acik Veri",
+        "indirilen_ay_sayisi":     len(all_frames),
+        "ham_satir_toplam":        int(ham_satir_toplam),
         "besiktas_filtre_sonrasi": int(len(merged)),
-        "lag_nan_silinen":      0,
-        "temizlik":             temizlik_sayac,
-        "final_satir":          int(len(merged)),
-        "final_sutun":          int(len(merged.columns)),
+        "filtre_orani_pct":        round(len(merged) / max(ham_satir_toplam, 1) * 100, 2),
+        "temizlik":                temizlik_sayac,
+        "final_satir":             int(len(merged)),
+        "final_sutun":             int(len(merged.columns)),
     }
     with open("trafik_kalite.json", "w", encoding="utf-8") as f:
         json.dump(kalite, f, ensure_ascii=False, indent=2)
@@ -569,4 +523,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
