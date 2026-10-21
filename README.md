@@ -7,7 +7,7 @@ Beşiktaş ilçesinde kriz ve etkinlik anlarında toplu ulaşım yoğunluğunu �
 ve alternatif güzergah öneren yapay zeka tabanlı sistem.
 
 **TÜBİTAK 2209-A** kapsamında geliştirilmektedir.  
-**Galatasaray Üniversitesi** — 2025-2026
+**Galatasaray Üniversitesi** — 2026-2027
 
 ---
 
@@ -16,15 +16,15 @@ ve alternatif güzergah öneren yapay zeka tabanlı sistem.
 ```
 besiktas-rota/
 ├── egitim/                         # Model eğitimi
-│   ├── gecmis_trafik_ibb.py        # İBB 2020-2024 saatlik trafik verisi
-│   ├── gecmis_etkinlik_scraper.py  # Radar TR + Ticketmaster + Mackolik
+│   ├── gecmis_trafik_ibb.py        # İBB 2020-2025(Ocak) saatlik trafik verisi
+│   ├── gecmis_etkinlik_scraper.py  # Setlist.fm + Ticketmaster + Mackolik
 │   ├── gecmis_hava_durumu.py       # Open-Meteo geçmiş hava verisi
 │   ├── birlestirme.py              # Veri kaynaklarını birleştir
 │   └── lstm_egitim.py              # LSTM modeli eğit
 │
 └── sistem/                         # Canlı sistem
     ├── anlik_trafik_tomtom_alansal.py  # TomTom anlık trafik (58 segment)
-    ├── anlik_etkinlik_scraper.py       # Radar TR anlık etkinlikler
+    ├── anlik_etkinlik_scraper.py       # Radar TR + Ticketmaster anlık etkinlikler
     └── anlik_hava_durumu.py            # Open-Meteo anlık hava
 ```
 
@@ -100,9 +100,10 @@ python anlik_hava_durumu.py --mod anlik
 | Kaynak | Veri | Dönem |
 |---|---|---|
 | İBB Açık Veri Portalı | Saatlik trafik yoğunluğu | 2020-2025 | https://data.ibb.gov.tr/dataset/hourly-traffic-density-data-set
-| Radar Türkiye | 16 platform birleşik etkinlik | 2020-günümüz |
+| Radar Türkiye | Etkinlik Verisi | Gerçek zamanlı |
 | Open-Meteo | Saatlik hava durumu | 1940-günümüz |
 | TomTom Flow API | Anlık segment bazlı trafik | Gerçek zamanlı |
+| Setlist.fm | Konser saat,lokasyon bilgisi | 2020'den itibaren çekilebilir |
 
 ## Kaynak Site,Kategoriler : 
 Biletix,"Konser, Spor, Tiyatro, Festival, Aile, Sanat, Stand-up, Eğitim"
@@ -156,6 +157,7 @@ yarıçap (km) = 0.5 × √(kapasite / 500) (?)
 **LSTM**
 - https://colah.github.io/posts/2015-08-Understanding-LSTMs/ 
 -  https://web.stanford.edu/class/cs379c/archive/2018/class_messages_listing/content/Artificial_Neural_Network_Technology_Tutorials/OlahLSTM-NEURAL-NETWORK-TUTORIAL-15.pdf
+-  https://keras.io/api/layers/recurrent_layers/lstm/
 
 - **Stacked LSTM** - https://ieeexplore.ieee.org/abstract/document/8288312/metrics#metrics
 - https://aapm.onlinelibrary.wiley.com/doi/epdf/10.1002/acm2.13558
