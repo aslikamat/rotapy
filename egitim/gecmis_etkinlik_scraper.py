@@ -154,199 +154,7 @@ def estimate_end(start_dt: datetime, category: str, venue: str) -> datetime:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. RADAR TÜRKİYE — Playwright ile JS render
-# ─────────────────────────────────────────────────────────────────────────────
-
-RADAR_SEARCH_URL = "https://www.radarturkiye.com/ara?q=be%C5%9Fikta%C5%9F&city=istanbul"
-RADAR_BASE       = "https://www.radarturkiye.com"
-
-def scrape_radar_turkiye(
-    start_date: str = "2020-01-01",
-    end_date:   str = "2024-12-31",
-) -> list[dict]:
-    """
-    Radar Türkiye'den Beşiktaş etkinliklerini çeker.
-    Playwright kullanır (JS render gerekli).
-    """
-    print("\n[Radar Türkiye] Scrape başlıyor...")
-    try:
-        from playwright.sync_api import sync_playwright
-        return _radar_playwright(start_date, end_date)
-    except ImportError:
-        print("  [UYARI] Playwright kurulu değil, requests deneniyor...")
-        return _radar_requests(start_date, end_date)
-    except Exception as e:
-        print(f"  [HATA] {e}")
-        return []
-
-
-def _radar_playwright(start_date: str, end_date: str) -> list[dict]:
-    from playwright.sync_api import sync_playwright
-    from bs4 import BeautifulSoup
-
-    UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-          "AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36")
-
-    # Beşiktaş mekânlarını tek tek ara
-    venues_to_search = [
-        "beşiktaş", "vodafone park", "zorlu psm",
-        "if performance hall beşiktaş", "harbiye",
-    ]
-
-    events = []
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page    = browser.new_context(user_agent=UA).new_page()
-
-        for venue_kw in venues_to_search:
-            url = f"{RADAR_BASE}/ara?q={requests.utils.quote(venue_kw)}"
-            print(f"  → '{venue_kw}' aranıyor...")
-            try:
-                page.goto(url, timeout=20000)
-                page.wait_for_load_state("networkidle", timeout=15000)
-                # Sayfayı scroll et — lazy load için
-                for _ in range(5):
-                    page.evaluate("window.scrollBy(0, window.innerHeight)")
-                    time.sleep(0.6)
-
-                soup  = BeautifulSoup(page.content(), "html.parser")
-                found = _parse_radar_cards(soup)
-                # Tarih filtresi
-                found = _filter_by_date(found, start_date, end_date)
-                events.extend(found)
-                print(f"     {len(found)} etkinlik")
-            except Exception as e:
-                print(f"     [HATA] {e}")
-            time.sleep(1)
-
-        browser.close()
-
-    return events
-
-
-def _radar_requests(start_date: str, end_date: str) -> list[dict]:
-    """Playwright yoksa requests fallback."""
-    from bs4 import BeautifulSoup
-
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 Chrome/123.0.0.0 Safari/537.36",
-        "Accept-Language": "tr-TR,tr;q=0.9",
-    })
-
-    venues_to_search = ["beşiktaş", "vodafone park", "zorlu psm", "harbiye"]
-    events = []
-
-    for kw in venues_to_search:
-        url = f"{RADAR_BASE}/ara?q={requests.utils.quote(kw)}"
-        try:
-            r = session.get(url, timeout=15)
-            r.raise_for_status()
-            soup  = BeautifulSoup(r.text, "html.parser")
-            found = _parse_radar_cards(soup)
-            found = _filter_by_date(found, start_date, end_date)
-            events.extend(found)
-            print(f"  → '{kw}': {len(found)} etkinlik")
-            time.sleep(1.2)
-        except Exception as e:
-            print(f"  → '{kw}': [HATA] {e}")
-
-    return events
-
-
-def _parse_radar_cards(soup) -> list[dict]:
-    """Radar Türkiye kart HTML'ini parse et."""
-    events = []
-
-    # Kart seçiciler — site güncellenirse burası değişebilir
-    selectors = [
-        "article", "div.event-card", "div[class*='EventCard']",
-        "div[class*='event']", "a[href*='/etkinlik/']",
-    ]
-    cards = []
-    for sel in selectors:
-        cards = soup.select(sel)
-        if len(cards) > 2:
-            break
-
-    for card in cards:
-        try:
-            # Ad
-            name = ""
-            for tag in ["h1", "h2", "h3", "[class*='title']", "[class*='name']"]:
-                el = card.select_one(tag)
-                if el:
-                    name = el.get_text(strip=True)
-                    break
-            if not name or len(name) < 3:
-                continue
-
-            # Tarih ve saat — "13 Nisan 2026, Pazartesi · 20:30" formatı
-            date_str, time_str = "", ""
-            for tag in ["time", "[class*='date']", "[class*='Date']",
-                        "[class*='tarih']", "p", "span"]:
-                els = card.select(tag)
-                for el in els:
-                    text = el.get_text(strip=True)
-                    # Saat
-                    m = re.search(r'\b(\d{1,2}):(\d{2})\b', text)
-                    if m and not time_str:
-                        time_str = f"{int(m.group(1)):02d}:{m.group(2)}"
-                    # Tarih
-                    if not date_str:
-                        d = _parse_tr_date(text)
-                        if d:
-                            date_str = d
-
-            # Mekan
-            venue = ""
-            for tag in ["[class*='venue']", "[class*='mekan']",
-                        "[class*='location']", "[class*='place']"]:
-                el = card.select_one(tag)
-                if el:
-                    venue = el.get_text(strip=True)
-                    break
-
-            # Link
-            link = card if card.name == "a" else card.find("a")
-            url  = ""
-            if link and link.get("href"):
-                href = link["href"]
-                url  = href if href.startswith("http") else f"{RADAR_BASE}{href}"
-
-            # Kategori (URL veya etiket'ten)
-            category = _guess_category(name, url)
-
-            if not is_besiktas(venue, name):
-                continue
-
-            vi = venue_info(venue)
-            start_dt = _to_datetime(date_str, time_str)
-            end_dt   = estimate_end(start_dt, category, venue) if start_dt else None
-
-            events.append({
-                "source":               "Radar Türkiye",
-                "name":                 name,
-                "category":             category,
-                "start_date_hour":      _date_hour(start_dt, date_str),
-                "end_date_hour":        _date_hour(end_dt, ""),
-                "start_datetime":       start_dt.isoformat() if start_dt else "",
-                "end_datetime":         end_dt.isoformat()   if end_dt   else "",
-                "venue":                venue,
-                "lat":                  vi["lat"],
-                "lon":                  vi["lon"],
-                "geohash":              encode_geohash(vi["lat"], vi["lon"]),
-                "estimated_attendance": vi["cap"],
-                "url":                  url,
-            })
-        except Exception:
-            continue
-
-    return events
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. TICKETMASTER — geçmiş etkinlikler
+# 1. TICKETMASTER — geçmiş etkinlikler
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fetch_ticketmaster_history(
@@ -433,7 +241,7 @@ def fetch_ticketmaster_history(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. SETLIST.FM — geçmiş konserler (2015'e kadar)
+# 2. SETLIST.FM — geçmiş konserler (2015'e kadar)
 # Ücretsiz API key: setlist.fm/settings/api
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -552,7 +360,7 @@ def fetch_setlistfm(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. MACKOLİK — BJK geçmiş maç fikstürü
+# 3. MACKOLİK — BJK geçmiş maç fikstürü
 # ─────────────────────────────────────────────────────────────────────────────
 
 MACKOLIK_BASE     = "https://arsiv.mackolik.com"
