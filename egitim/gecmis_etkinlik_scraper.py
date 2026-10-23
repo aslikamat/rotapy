@@ -44,10 +44,6 @@ import requests
 import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MEKAN VERİTABANI — koordinat + tahmini kapasite
-# ─────────────────────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────────────────────
 # GEOHASH — harici kütüphane gerektirmeyen saf Python implementasyonu
 # anlik_etkinlik_scraper.py ile AYNI algoritma/hassasiyet — join tutarlılığı
 # ─────────────────────────────────────────────────────────────────────────────
@@ -257,9 +253,6 @@ def fetch_setlistfm(
 ) -> list[dict]:
     """
     setlist.fm REST API — gerçek, kullanıcı katkılı geçmiş konser arşivi.
-    Ücretsiz API key gerekli (setlist.fm hesabı > API Settings). Ticari
-    olmayan kullanım için ücretsiz; hız limiti standart anahtarlarda
-    ~2 istek/sn, günde ~1440 istek.
     Venue setlist'leri varsayılan olarak EN YENİDEN EN ESKİYE sıralanır;
     bu yüzden start_date'in altına inince döngüden çıkıyoruz, ama
     end_date'in üstündeki (çok yakın tarihli) kayıtları da atlıyoruz.
