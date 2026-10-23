@@ -16,6 +16,7 @@ Kullanım:
 
 Çıktı:
     gecmis_hava_durumu.parquet  → LSTM eğitim verisi
+    gecmis_hava_durumu_ornek.csv → ilk 1000 satır örnek CSV
 
 Sütunlar:
     timestamp, date_hour, weekday, is_weekend
@@ -340,6 +341,10 @@ def save(df: pd.DataFrame, path: str) -> None:
     df.to_parquet(path, index=False, engine="pyarrow")
     size_kb = Path(path).stat().st_size // 1024
     print(f"  [Kaydedildi] {path}  ({len(df):,} satır, {size_kb} KB)")
+
+    csv_path = path.replace(".parquet", "_ornek.csv")
+    df.head(1000).to_csv(csv_path, index=False, encoding="utf-8-sig")
+    print(f"  [Örnek CSV] {csv_path}")
 
     # Kalite raporu
     kalite = {

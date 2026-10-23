@@ -412,6 +412,7 @@ def add_lstm_features(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 def main():
+
     parser = argparse.ArgumentParser(
         description="İBB Trafik Verisi — Beşiktaş Filtresi & LSTM Hazırlayıcı"
     )
@@ -504,6 +505,11 @@ def main():
                  "speed", "density", "is_weekend", "target"]
     show_cols = [c for c in show_cols if c in merged.columns]
     print(merged[show_cols].head().to_string(index=False))
+
+    merged.head(1000).to_csv(
+    args.out.replace(".parquet", "_ornek.csv"),
+    index=False, encoding="utf-8-sig")
+    print(f"  Örnek CSV: {args.out.replace('.parquet', '_ornek.csv')}")
 
     # Kalite raporu
     kalite = {

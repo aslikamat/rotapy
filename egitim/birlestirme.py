@@ -658,6 +658,14 @@ def main():
     print_summary(df, args.out)
     save_quality_report(df, sayaclar, args.out)
 
+    # İlk 1000 satırı CSV olarak kaydet (inceleme için)
+    df.head(1000).to_csv(
+    args.out.replace(".parquet", "_ornek.csv"),
+    index=False,
+    encoding="utf-8-sig"
+     )
+    print(f"  Örnek CSV: {args.out.replace('.parquet', '_ornek.csv')} (ilk 1000 satır)")
+
     print(f"\n  Sonraki adım: python lstm_egitim.py --data {args.out}")
 
 

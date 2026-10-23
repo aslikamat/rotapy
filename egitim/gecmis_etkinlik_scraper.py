@@ -443,7 +443,7 @@ SETLIST_VENUES = [
 ]
 
 def fetch_setlistfm(
-    api_key:    str = 	"dWqSQA5hA4HJtnaqV8krv_R7sB6k6VUuiRxU",
+    api_key:    str,
     start_date: str = "2020-01-01",
     end_date:   str = "2099-12-31",
 ) -> list[dict]:
@@ -466,6 +466,7 @@ def fetch_setlistfm(
 
     for venue_name in SETLIST_VENUES:
         # Önce mekan ID'sini bul
+        time.sleep(5)  # rate limiting önlemi
         r = requests.get(
             "https://api.setlist.fm/rest/1.0/search/venues",
             params={"name": venue_name, "cityName": "Istanbul"},
@@ -894,6 +895,10 @@ def main():
 
     df = pd.DataFrame(all_events)
     df.to_parquet(args.out, index=False, engine="pyarrow")
+    df.head(1000).to_csv(
+    args.out.replace(".parquet", "_ornek.csv"),
+    index=False, encoding="utf-8-sig" )
+    print(f"  Örnek CSV: {args.out.replace('.parquet', '_ornek.csv')}")
 
     # Kalite raporu
     kalite = {
