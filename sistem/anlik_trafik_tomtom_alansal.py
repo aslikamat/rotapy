@@ -290,7 +290,7 @@ def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool,
         conf     = raw.get("confidence",          0)
         closure  = int(raw.get("roadClosure", False))
 
-    congestion = round(current / max(freeflow, 1), 4)
+    congestion = round(min(max(1 - current / max(freeflow, 1), 0), 1), 4)
     delay      = round((tt - fft) / max(fft, 1), 4)
 
     return {
