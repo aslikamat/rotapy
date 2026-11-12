@@ -1,23 +1,28 @@
 """
 OSM → TomTom Sorgu Noktası Seçici
 ==================================
-Her İBB hücresi (6 karakterli geohash, ~600 m x 900 m) için OpenStreetMap'ten
+İBB'nin 41 hücresi (6 karakterli geohash, ~600 m x 900 m) için OpenStreetMap'ten
 ana yolları (motorway/trunk/primary/secondary/tertiary) bulur ve hücre başına
 en önemli N yoldan birer TomTom sorgu noktası seçer.
+
+Hücre listesi: Ocak 2020 → Ocak 2025 İBB verisinde 59 ayda görünen 41 hücre
+(kontrol.py çıktısı; 2020-07 ve 2020-08 dosyaları yok). Sadece 1 ayda görünen
+4 hücre dışarıda. OSM'e de SADECE bu hücrelerin içindeki yollar sorulur.
 
 Neden: İBB bir hücre için o hücredeki yolların toplanmış değerini veriyor,
 TomTom ise noktaya en yakın TEK yolu. Hücre başına birkaç ana yoldan
 örnek alıp ortalamasını almak iki veriyi birbirine yaklaştırır.
 
 Kurulum:
-    pip install requests pandas pyarrow
+    pip install requests
 
 Kullanım:
-    python osm_nokta_sec.py                          # hücre başına 2 yol
+    python osm_nokta_sec.py                          # gömülü 41 hücre, hücre başına 2 yol
     python osm_nokta_sec.py --per-cell 3
     python osm_nokta_sec.py --max-points 100         # kota için üst sınır
     python osm_nokta_sec.py --minor-fallback         # ana yolu olmayan hücrelere sokak ekle
     python osm_nokta_sec.py --refresh                # OSM'den yeniden indir
+    python osm_nokta_sec.py --hucreler ibb_hucreler.csv --min-ay 12   # listeyi CSV'den oku
 
 Çıktı:
     tomtom_noktalar.json   → TomTom script'i bunu okuyacak (ROAD_SEGMENTS formatı)
@@ -28,6 +33,7 @@ Veri kaynağı: © OpenStreetMap contributors (ODbL). Rapor ve sunumda belirtin.
 """
 
 import argparse
+import csv
 import json
 import math
 import time
@@ -95,25 +101,42 @@ def decode_bbox(gh: str) -> tuple:
 # HÜCRELER (İBB verisinden)
 # =============================================================================
 
-# İBB verisi yoksa kullanılacak Beşiktaş kutusu: (güney, kuzey, batı, doğu)
-BESIKTAS_BBOX = (41.025, 41.075, 28.980, 29.040)
+# Ocak 2020 → Ocak 2025 İBB verisinde 59 ayda görünen 41 hücre (kontrol.py çıktısı).
+# Sadece 1 ayda görünen sxk97u, sxk97v, sxk9kj, sxk9kn bilerek dışarıda.
+IBB_HUCRELER = (
+    "sxk97s", "sxk97t", "sxk97w", "sxk97x", "sxk97y", "sxk97z",
+    "sxk9e8", "sxk9e9", "sxk9eb", "sxk9ec", "sxk9ed", "sxk9ee",
+    "sxk9ef", "sxk9eg", "sxk9es", "sxk9eu", "sxk9kh", "sxk9kk",
+    "sxk9km", "sxk9kp", "sxk9kq", "sxk9kr", "sxk9ks", "sxk9kt",
+    "sxk9kw", "sxk9kx", "sxk9s0", "sxk9s1", "sxk9s2", "sxk9s3",
+    "sxk9s4", "sxk9s5", "sxk9s6", "sxk9s7", "sxk9s8", "sxk9s9",
+    "sxk9sd", "sxk9se", "sxk9sh", "sxk9sk", "sxk9ss",
+)
 
 
-def load_cells(parquet_path: str) -> tuple:
-    """İBB parquet'indeki benzersiz 6 karakterli hücreleri döndürür."""
-    if parquet_path and Path(parquet_path).exists():
+def load_cells(kaynak: str = None, min_ay: int = 12) -> tuple:
+    """
+    Hücre listesi (6 karakterli geohash):
+      kaynak yok  → yukarıdaki gömülü 41 hücre
+      kaynak .csv → kontrol.py'nin ibb_hucreler.csv'si; ay_sayisi >= min_ay olanlar
+      kaynak .parquet → içindeki tüm benzersiz geohash[:6] (nadir hücre filtresi YOK)
+    Dosya verilip bulunamazsa hata verir, sessizce başka listeye geçmez.
+    """
+    if kaynak:
+        p = Path(kaynak)
+        if not p.exists():
+            raise FileNotFoundError(f"Hücre dosyası bulunamadı: {kaynak}")
+        if p.suffix.lower() == ".csv":
+            with open(p, encoding="utf-8-sig", newline="") as f:
+                rows = list(csv.DictReader(f))
+            cells = sorted({r["cell6"] for r in rows if int(r["ay_sayisi"]) >= min_ay})
+            return cells, f"{kaynak} (ay_sayisi >= {min_ay})"
         import pandas as pd
-        gh = pd.read_parquet(parquet_path, columns=["geohash"])["geohash"]
+        gh = pd.read_parquet(p, columns=["geohash"])["geohash"]
         cells = sorted({g[:6] for g in gh.dropna().unique() if len(g) >= 6})
-        return cells, f"İBB verisi ({parquet_path})"
-
-    # Yedek: Beşiktaş kutusundaki tüm 6 karakterli hücreler
-    s, n, w, e = BESIKTAS_BBOX
-    dlat, dlon = 180 / 2 ** 15, 360 / 2 ** 15
-    lats = [s + i * dlat / 2 for i in range(int((n - s) / (dlat / 2)) + 1)] + [n]
-    lons = [w + i * dlon / 2 for i in range(int((e - w) / (dlon / 2)) + 1)] + [e]
-    cells = {encode_geohash(la, lo, 6) for la in lats for lo in lons}
-    return sorted(cells), "Beşiktaş kutusu (İBB dosyası bulunamadı)"
+        return cells, f"{kaynak} (parquet, nadir hücre filtresi yok)"
+    return (sorted(IBB_HUCRELER),
+            "Gömülü İBB listesi (2020-01 → 2025-01, 59 ayda görünen 41 hücre)")
 
 
 # =============================================================================
@@ -135,12 +158,14 @@ CLASS_RANK = {
 MAIN_MAX_RANK = 4
 
 
-def build_query(bbox: tuple, include_minor: bool) -> str:
-    s, n, w, e = bbox
+def build_query(cells: list, include_minor: bool) -> str:
+    """Sadece verilen hücrelerin içindeki yolları ister (hücre başına bir kutu)."""
     classes = MAIN_CLASSES + ("|" + MINOR_CLASSES if include_minor else "")
-    return (f'[out:json][timeout:90];'
-            f'way["highway"~"^({classes})$"]({s:.5f},{w:.5f},{n:.5f},{e:.5f});'
-            f'out geom;')
+    parts = []
+    for c in cells:
+        s, n, w, e = decode_bbox(c)
+        parts.append(f'way["highway"~"^({classes})$"]({s:.5f},{w:.5f},{n:.5f},{e:.5f});')
+    return "[out:json][timeout:120];(" + "".join(parts) + ");out geom;"
 
 
 def fetch_overpass(query: str, retries: int = 3) -> dict:
@@ -279,30 +304,37 @@ def select_for_cell(groups: dict, per_cell: int, min_len: float,
 # ANA AKIŞ
 # =============================================================================
 
-def get_osm(cache_path: Path, bbox: tuple, include_minor: bool, refresh: bool) -> dict:
-    """Önbellek geçerliyse onu kullanır (aynı bölge ve gereken yol sınıfları)."""
-    s, n, w, e = bbox
+def get_osm(cache_path: Path, cells: list, include_minor: bool, refresh: bool) -> dict:
+    """Önbellek bu hücreleri kapsıyorsa onu kullanır, yoksa OSM'den indirir."""
     if cache_path.exists() and not refresh:
         data = json.loads(cache_path.read_text(encoding="utf-8"))
         meta = data.get("_meta", {})
-        mb = meta.get("bbox", [1e9, -1e9, 1e9, -1e9])
-        covers = mb[0] <= s and mb[1] >= n and mb[2] <= w and mb[3] >= e
-        if covers and (meta.get("minor") or not include_minor):
+        if "cells" in meta:
+            kapsiyor = set(cells) <= set(meta["cells"])
+        else:   # eski önbellek: tek büyük kutu
+            bb = [decode_bbox(c) for c in cells]
+            s, n = min(b[0] for b in bb), max(b[1] for b in bb)
+            w, e = min(b[2] for b in bb), max(b[3] for b in bb)
+            mb = meta.get("bbox", [1e9, -1e9, 1e9, -1e9])
+            kapsiyor = mb[0] <= s and mb[1] >= n and mb[2] <= w and mb[3] >= e
+        if kapsiyor and (meta.get("minor") or not include_minor):
             print(f"  Önbellek kullanılıyor: {cache_path}  (yenilemek için --refresh)")
             return data
         print("  Önbellek bu istek için yetersiz, OSM'den yeniden indiriliyor...")
 
-    print("  OSM (Overpass) sorgulanıyor, 10-60 sn sürebilir...")
-    data = fetch_overpass(build_query(bbox, include_minor))
-    data["_meta"] = {"bbox": [s, n, w, e], "minor": include_minor}
+    print(f"  OSM (Overpass) sorgulanıyor ({len(cells)} hücre), 10-60 sn sürebilir...")
+    data = fetch_overpass(build_query(cells, include_minor))
+    data["_meta"] = {"cells": sorted(cells), "minor": include_minor}
     cache_path.write_text(json.dumps(data), encoding="utf-8")
     return data
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="OSM → TomTom sorgu noktası seçici")
-    ap.add_argument("--ibb", default="besiktas_trafik_lstm.parquet",
-                    help="İBB parquet'i (hücre listesi buradan alınır)")
+    ap.add_argument("--hucreler", default=None,
+                    help="ibb_hucreler.csv (kontrol.py çıktısı); verilmezse gömülü 41 hücre")
+    ap.add_argument("--min-ay", type=int, default=12,
+                    help="--hucreler CSV ise: en az kaç ayda görünen hücreler (varsayılan 12)")
     ap.add_argument("--per-cell", type=int, default=2,
                     help="Hücre başına en fazla kaç yol (varsayılan 2)")
     ap.add_argument("--min-len", type=float, default=80,
@@ -320,16 +352,14 @@ def main() -> None:
     args = ap.parse_args()
 
     print("\n[1/3] İBB hücreleri belirleniyor...")
-    cells, kaynak = load_cells(args.ibb)
+    cells, kaynak = load_cells(args.hucreler, args.min_ay)
     print(f"  Kaynak: {kaynak}")
     print(f"  {len(cells)} adet 6 karakterli hücre")
 
     bboxes = {c: decode_bbox(c) for c in cells}
-    bbox = (min(b[0] for b in bboxes.values()), max(b[1] for b in bboxes.values()),
-            min(b[2] for b in bboxes.values()), max(b[3] for b in bboxes.values()))
 
     print("\n[2/3] OpenStreetMap yolları alınıyor...")
-    data = get_osm(Path(args.cache), bbox, args.minor_fallback, args.refresh)
+    data = get_osm(Path(args.cache), cells, args.minor_fallback, args.refresh)
     ways = [el for el in data.get("elements", []) if el.get("type") == "way"]
     print(f"  {len(ways):,} yol parçası")
 
