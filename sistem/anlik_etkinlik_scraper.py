@@ -47,18 +47,30 @@ import pandas as pd
 # ─────────────────────────────────────────────────────────────────────────────
 
 VENUE_DB = {
-    "vodafone park":                {"lat": 41.0390, "lon": 29.0100, "cap": 42684},
-    "tüpraş stadyumu":              {"lat": 41.0390, "lon": 29.0100, "cap": 42684},
-    "beşiktaş tüpraş stadyumu":     {"lat": 41.0390, "lon": 29.0100, "cap": 42684},
-    "zorlu psm":                    {"lat": 41.0681, "lon": 29.0116, "cap": 2350},
-    "zorlu performans sanatları":   {"lat": 41.0681, "lon": 29.0116, "cap": 2350},
-    "harbiye cemil topuzlu":        {"lat": 41.0487, "lon": 28.9887, "cap": 5000},
-    "ibb harbiye":                  {"lat": 41.0487, "lon": 28.9887, "cap": 5000},
-    "if performance hall beşiktaş": {"lat": 41.0435, "lon": 29.0068, "cap": 800},
-    "if performance hall":          {"lat": 41.0435, "lon": 29.0068, "cap": 800},
+    "vodafone park":                {"lat": 41.042041, "lon": 28.994508, "cap": 42684},   # koordinat kullanıcı tarafından doğrulandı
+    "tüpraş stadyumu":              {"lat": 41.042041, "lon": 28.994508, "cap": 42684},   # koordinat kullanıcı tarafından doğrulandı
+    "beşiktaş tüpraş stadyumu":     {"lat": 41.042041, "lon": 28.994508, "cap": 42684},   # koordinat kullanıcı tarafından doğrulandı
+    # Zorlu PSM — koordinat kullanıcı tarafından doğrulandı; egitim/gecmis_etkinlik_scraper.py
+    # ile AYNI. "zorlu center psm" anahtarı olmadan bu ad varsayılan konuma düşüyordu.
+    "zorlu center psm":             {"lat": 41.066812, "lon": 29.016252, "cap": 2350},
+    "zorlu psm":                    {"lat": 41.066812, "lon": 29.016252, "cap": 2350},
+    "zorlu performans sanatları":   {"lat": 41.066812, "lon": 29.016252, "cap": 2350},
+    # Harbiye Cemil Topuzlu Açıkhava Tiyatrosu — İBB Şehir Tiyatroları CSV'sindeki
+    # resmi konum; egitim/gecmis_etkinlik_scraper.py ile AYNI
+    "harbiye cemil topuzlu":        {"lat": 41.045777, "lon": 28.99044, "cap": 5000},
+    "ibb harbiye":                  {"lat": 41.045777, "lon": 28.99044, "cap": 5000},
+    "if performance hall beşiktaş": {"lat": 41.044349, "lon": 29.006474, "cap": 800},   # koordinat kullanıcı tarafından doğrulandı
+    "if performance hall":          {"lat": 41.044349, "lon": 29.006474, "cap": 800},   # koordinat kullanıcı tarafından doğrulandı
     "sahne beşiktaş":               {"lat": 41.0428, "lon": 29.0050, "cap": 500},
     "çarşı pub":                    {"lat": 41.0410, "lon": 29.0045, "cap": 300},
     "mentalist pub beşiktaş":       {"lat": 41.0415, "lon": 29.0048, "cap": 250},
+    # Aşağıdakiler egitim/gecmis_etkinlik_scraper.py VENUE_DB'sinden — iki scraper
+    # aynı mekanı aynı konum/kapasiteyle işlesin diye
+    "muhsin ertuğrul":              {"lat": 41.0466, "lon": 28.9884, "cap": 500},
+    "çırağan palace":               {"lat": 41.045100, "lon": 29.016480, "cap": 700},   # koordinat kullanıcı tarafından doğrulandı
+    "swissotel":                    {"lat": 41.042487, "lon": 28.997628, "cap": 800},   # koordinat kullanıcı tarafından doğrulandı
+    "beşiktaş kültür merkezi":      {"lat": 41.043729, "lon": 29.005887, "cap": 800},   # aynı bina; koordinat kullanıcı tarafından doğrulandı
+    "bkm sahne":                    {"lat": 41.043729, "lon": 29.005887, "cap": 580},   # aynı bina; koordinat kullanıcı tarafından doğrulandı
     "default_besiktas":             {"lat": 41.0402, "lon": 29.0097, "cap": 500},
 }
 

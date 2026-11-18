@@ -58,7 +58,7 @@ from keras.src.layers.regularization.dropout import Dropout
 from lstm_egitim import (
     build_model,        # modeli kuran fonksiyon
     create_sequences,   # veriyi 6 saatlik pencerelere bölen fonksiyon
-    FEATURE_COLS,       # 23 özellik sütunu
+    FEATURE_COLS,       # 21 özellik sütunu
     TARGET_COL,         # "congestion_ratio"
     GROUP_COL,          # "geohash"
     SEQUENCE_LEN,       # 6
@@ -69,7 +69,7 @@ np.set_printoptions(precision=4, suppress=True, linewidth=100)
 np.random.seed(0)
 tf.random.set_seed(0)
 
-N_FEAT = len(FEATURE_COLS)   # 23
+N_FEAT = len(FEATURE_COLS)   # 21
 
 import keras
 print(f"Keras sürümü: {keras.__version__}  (gösterilen kaynak kod satır numaraları bu sürüme aittir)")
@@ -134,7 +134,7 @@ baslik("BÖLÜM 1 — 150 saatlik veri, bizim create_sequences() ile pencerelere
 # pandas.DataFrame = Excel tablosu gibi satır/sütunlu veri yapısı.
 saat_sayisi = 150
 df = pd.DataFrame(
-    np.random.rand(saat_sayisi, N_FEAT),   # 150 satır × 23 sütun rastgele sayı
+    np.random.rand(saat_sayisi, N_FEAT),   # 150 satır × 21 sütun rastgele sayı
     columns=FEATURE_COLS,                  # sütun isimleri bizim FEATURE_COLS
 )
 df["datetime"] = pd.date_range("2024-01-01", periods=saat_sayisi, freq="h")
@@ -202,12 +202,12 @@ keras_kodu_goster(LSTMCell.__init__, baslangic="self.state_size", satir_sayisi=2
 
 print("""
 Ağırlıklar build() içinde oluşturuluyor. input_dim = girdinin son boyutu
-(1. katman için 23 özellik). "self.units * 4" → 4 kapı (i, f, g, o) için yan yana
+(1. katman için 21 özellik). "self.units * 4" → 4 kapı (i, f, g, o) için yan yana
 4 tane 64'lük blok:""")
 keras_kodu_goster(LSTMCell.build, baslangic="input_dim = input_shape[-1]",
                   bitis='name="recurrent_kernel"')
 
-for ad, katman, girdi_ad in [("LSTM-1", lstm1, "23 özellik"),
+for ad, katman, girdi_ad in [("LSTM-1", lstm1, "21 özellik"),
                              ("LSTM-2", lstm2, "LSTM-1'in 64'lük h'si")]:
     W = katman.cell.kernel.numpy()            # x_t ile çarpılan matris
     U = katman.cell.recurrent_kernel.numpy()  # h_(t-1) ile çarpılan matris
@@ -290,7 +290,7 @@ keras_kodu_goster(LSTMCell._compute_carry_and_output_fused)
 
 print("""
 Satır satır anlamı:
-  z = x_t @ W            → 23'lük girdi × (23, 256)    = 256 sayı
+  z = x_t @ W            → 21'lük girdi × (21, 256)    = 256 sayı
   z = z + h_(t-1) @ U    → 64'lük hafıza × (64, 256)   = 256 sayı, toplanır
   z = z + b              → 256'lık bias eklenir
   z0,z1,z2,z3 = split(z) → 256 sayı 4 eşit parçaya: her biri 64
@@ -327,14 +327,14 @@ def hucre_bir_adim(x_t, h_onceki, c_onceki, W, U, b, units):
 
 
 # Bölüm 1'deki GERÇEK ilk penceremizi (saat 1-6) alalım
-pencere = X[0]                                 # (6, 23)
+pencere = X[0]                                 # (6, 21)
 W = lstm1.cell.kernel.numpy()
 U = lstm1.cell.recurrent_kernel.numpy()
 b = lstm1.cell.bias.numpy()
 
 h = np.zeros(64, dtype=np.float32)             # Bölüm 4: h_0 = 0
 c = np.zeros(64, dtype=np.float32)             # Bölüm 4: c_0 = 0
-x1 = pencere[0]                                # saat 1'in 23 özelliği
+x1 = pencere[0]                                # saat 1'in 21 özelliği
 
 print(f"\nÖrnek: Pencere 1'in ilk saati (x_1) ile tek adım:")
 print(f"  x_1.shape = {x1.shape},  h_0.shape = {h.shape},  c_0.shape = {c.shape}")
@@ -375,11 +375,11 @@ tum_h_elle = []
 for t in range(SEQUENCE_LEN):                       # t = 0..5 → saat 1..6
     h, c, _ = hucre_bir_adim(pencere[t], h, c, W, U, b, 64)   # AYNI W, U, b
     tum_h_elle.append(h)
-    print(f"  t={t+1}: girdi x_{t+1} (23) + h_{t} (64) → h_{t+1}[:3] = {h[:3]}")
+    print(f"  t={t+1}: girdi x_{t+1} (21) + h_{t} (64) → h_{t+1}[:3] = {h[:3]}")
 tum_h_elle = np.stack(tum_h_elle)                   # (6, 64)
 
 # Keras'ın kendi hesabı: lstm1'e pencereyi veriyoruz, initial_state VERMİYORUZ.
-# pencere[None, ...] → başa batch boyutu ekler: (6, 23) → (1, 6, 23)
+# pencere[None, ...] → başa batch boyutu ekler: (6, 21) → (1, 6, 21)
 tum_h_keras = lstm1(pencere[None, ...]).numpy()[0]  # (6, 64)
 
 fark = np.abs(tum_h_elle - tum_h_keras).max()

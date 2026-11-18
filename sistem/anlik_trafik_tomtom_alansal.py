@@ -1,201 +1,106 @@
 """
 TomTom Traffic — Beşiktaş ALANSAL Veri Toplayıcı
 ==================================================
-Beşiktaş'taki tüm ana yol noktalarını (OSM tabanlı, 58 nokta)
+OSM_onemli_yollar.py'nin seçtiği yol noktalarını (tomtom_noktalar.json)
 TomTom Flow Segment API ile sorgular.
 
-Noktasal değil, YOL BAZLI çekim:
-  - Her sorgu bir yol segmentini temsil eder (dahili olarak)
-  - Çıktıda segment kimliği/adı YER ALMAZ — bunun yerine
-    latitude, longitude ve bu ikisinden üretilen GEOHASH kullanılır
-  - Isı haritası / choropleth harita için kullanılabilir
+Nasıl çalışır:
+  - TomTom'a her noktanın lat/lon'u gönderilir; TomTom noktaya en yakın yol
+    parçasının anlık hızını, serbest akış hızını ve geometrisini döndürür.
+  - Her ölçüm AYRI satır olarak kaydedilir (yol bazlı ham kayıt). İleride
+    rota önerisi için "yol, hücre ortalamasına göre nasıl davranıyor"
+    bilgisini çıkarmak bu ham kayda dayanır — hücre ortalaması ayrıca üretilir.
+  - geohash sütunu noktanın kendi geohash'i DEĞİL, noktanın düştüğü İBB
+    hücresinin eğitim verisindeki geohash'idir (ör. sxk9kpe). Bu değer
+    tomtom_noktalar.json'dan gelir, burada hesaplanmaz.
 
 Kurulum:
     pip install requests pandas pyarrow
 
 Kullanım:
-    python tomtom_besiktas_alansal.py                       # API key gömülü, direkt çalışır
-    python tomtom_besiktas_alansal.py --demo                 # API gerektirmez
-    python tomtom_besiktas_alansal.py --interval 10
-    python tomtom_besiktas_alansal.py --merge                # Parquet birleştir
-    python tomtom_besiktas_alansal.py --demo --geohash-precision 8
+    python anlik_trafik_tomtom_alansal.py                  # canlı, 60 dk aralık
+    python anlik_trafik_tomtom_alansal.py --demo           # API gerektirmez (simülasyon)
+    python anlik_trafik_tomtom_alansal.py --hours 3        # 3 saat çalış, dur
+    python anlik_trafik_tomtom_alansal.py --merge          # günlük parquet'leri birleştir
 
-TomTom API key kodun içine gömülüdür (aşağıda --key varsayılanı).
-Nokta sayısı 58'dir; 2500 istek/gün ücretsiz limit için önerilen
-aralık program başlarken ekrana yazdırılır (interval * nokta sayısı
-hesabına göre otomatik uyarı verir).
+Girdi:
+    tomtom_noktalar.json  (script'in yanında; OSM_onemli_yollar.py üretir)
 
-Doldurmanız gereken bir şey yok — key zaten tanımlı.
+Çıktı:
+    tomtom_data/besiktas_alansal_YYYYMMDD.parquet   (script'in yanında)
+    besiktas_alansal_merged.parquet                 (--merge ile)
 
-Bu versiyondaki değişiklikler:
-    1) Çıktıda segment_id / road_name YOK. Bunun yerine lat, lon ve
-       bunlardan hesaplanan `geohash` sütunu var (harici kütüphane
-       gerekmeyen saf Python implementasyonu ile).
-    2) Zaman tarafında ayrı date / hour / minute sütunları yerine,
-       date ve hour'un birleştirildiği tek bir `date_hour` sütunu var;
-       minute sütunu tamamen kaldırıldı.
+Kota: ücretsiz katman ~2.500 istek/gün. İstek sayısı = nokta sayısı × günlük
+sorgu sayısı; program başlarken hesaplanıp ekrana yazılır.
+
+Başarısız istekler: değerler boş (NaN) bırakılır ve ok=0 yazılır — sahte/simüle
+veri ASLA gerçek veriyle karışmaz. Simülasyon sadece --demo ile çalışır.
 """
 
-import requests
-import pandas as pd
-import time
 import argparse
+import json
 import random
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
+import requests
+
 # =============================================================================
-# BEŞİKTAŞ YOL SEGMENTLERI (dahili kullanım — sadece sorgu noktalarını
-# belirlemek için kullanılır, çıktıya segment kimliği yazılmaz)
+# DOSYALAR VE SABİTLER
 # =============================================================================
 
-ROAD_SEGMENTS = [
-    # ── BARBAROS BULVARI ──────────────────────────────────────────────────────
-    {"id": "BB01", "road": "Barbaros Bulvarı", "lat": 41.0428, "lon": 29.0052, "length_m": 300},
-    {"id": "BB02", "road": "Barbaros Bulvarı", "lat": 41.0455, "lon": 29.0058, "length_m": 300},
-    {"id": "BB03", "road": "Barbaros Bulvarı", "lat": 41.0480, "lon": 29.0063, "length_m": 300},
-    {"id": "BB04", "road": "Barbaros Bulvarı", "lat": 41.0505, "lon": 29.0068, "length_m": 300},
-    {"id": "BB05", "road": "Barbaros Bulvarı", "lat": 41.0530, "lon": 29.0072, "length_m": 300},
-    {"id": "BB06", "road": "Barbaros Bulvarı", "lat": 41.0555, "lon": 29.0075, "length_m": 300},
+SCRIPT_DIR    = Path(__file__).resolve().parent
+NOKTA_DOSYASI = SCRIPT_DIR / "tomtom_noktalar.json"
+OUTPUT_DIR    = SCRIPT_DIR / "tomtom_data"
+MERGED_PATH   = SCRIPT_DIR / "besiktas_alansal_merged.parquet"
 
-    # ── ÇIRAĞAN CADDESİ (BOĞAZİÇİ YOLU) ─────────────────────────────────────
-    {"id": "CC01", "road": "Çırağan Caddesi",  "lat": 41.0432, "lon": 29.0090, "length_m": 250},
-    {"id": "CC02", "road": "Çırağan Caddesi",  "lat": 41.0450, "lon": 29.0094, "length_m": 250},
-    {"id": "CC03", "road": "Çırağan Caddesi",  "lat": 41.0467, "lon": 29.0097, "length_m": 250},
-    {"id": "CC04", "road": "Çırağan Caddesi",  "lat": 41.0485, "lon": 29.0100, "length_m": 250},
-    {"id": "CC05", "road": "Çırağan Caddesi",  "lat": 41.0500, "lon": 29.0103, "length_m": 250},
-    {"id": "CC06", "road": "Çırağan Caddesi",  "lat": 41.0515, "lon": 29.0106, "length_m": 250},
-
-    # ── BEŞIKTAŞ-KABAТAŞ SAHIL YOLU ──────────────────────────────────────────
-    {"id": "SK01", "road": "Sahil Yolu",        "lat": 41.0395, "lon": 29.0060, "length_m": 200},
-    {"id": "SK02", "road": "Sahil Yolu",        "lat": 41.0400, "lon": 29.0075, "length_m": 200},
-    {"id": "SK03", "road": "Sahil Yolu",        "lat": 41.0405, "lon": 29.0090, "length_m": 200},
-    {"id": "SK04", "road": "Sahil Yolu",        "lat": 41.0410, "lon": 29.0105, "length_m": 200},
-
-    # ── VODAFONE PARK ÇEVRESİ ────────────────────────────────────────────────
-    {"id": "VP01", "road": "Vodafone Park Çevresi", "lat": 41.0385, "lon": 29.0095, "length_m": 200},
-    {"id": "VP02", "road": "Vodafone Park Çevresi", "lat": 41.0390, "lon": 29.0110, "length_m": 200},
-    {"id": "VP03", "road": "Vodafone Park Çevresi", "lat": 41.0395, "lon": 29.0080, "length_m": 200},
-    {"id": "VP04", "road": "Spor Caddesi",          "lat": 41.0375, "lon": 29.0100, "length_m": 300},
-
-    # ── YILDIZ CADDESİ ────────────────────────────────────────────────────────
-    {"id": "YC01", "road": "Yıldız Caddesi",    "lat": 41.0450, "lon": 29.0020, "length_m": 280},
-    {"id": "YC02", "road": "Yıldız Caddesi",    "lat": 41.0470, "lon": 29.0030, "length_m": 280},
-    {"id": "YC03", "road": "Yıldız Caddesi",    "lat": 41.0490, "lon": 29.0040, "length_m": 280},
-
-    # ── IHLAMURDERE CADDESİ ───────────────────────────────────────────────────
-    {"id": "IH01", "road": "Ihlamurdere Caddesi", "lat": 41.0460, "lon": 28.9980, "length_m": 250},
-    {"id": "IH02", "road": "Ihlamurdere Caddesi", "lat": 41.0475, "lon": 28.9990, "length_m": 250},
-    {"id": "IH03", "road": "Ihlamurdere Caddesi", "lat": 41.0490, "lon": 29.0000, "length_m": 250},
-
-    # ── DİKİLİTAŞ / SÜLEYMAN SEBASTİ ─────────────────────────────────────────
-    {"id": "DS01", "road": "Süleyman Seba Caddesi", "lat": 41.0415, "lon": 29.0040, "length_m": 300},
-    {"id": "DS02", "road": "Süleyman Seba Caddesi", "lat": 41.0430, "lon": 29.0035, "length_m": 300},
-    {"id": "DS03", "road": "Süleyman Seba Caddesi", "lat": 41.0445, "lon": 29.0030, "length_m": 300},
-
-    # ── ZORLU CENTER / LEVAZIM ────────────────────────────────────────────────
-    {"id": "ZC01", "road": "Zorlu Center Yolu",     "lat": 41.0675, "lon": 29.0110, "length_m": 300},
-    {"id": "ZC02", "road": "Koru Sokak",             "lat": 41.0681, "lon": 29.0116, "length_m": 200},
-    {"id": "ZC03", "road": "Levazım Caddesi",        "lat": 41.0665, "lon": 29.0100, "length_m": 280},
-    {"id": "ZC04", "road": "Levazım Bağlantı Yolu",  "lat": 41.0655, "lon": 29.0090, "length_m": 250},
-
-    # ── BALMUMCU ──────────────────────────────────────────────────────────────
-    {"id": "BM01", "road": "Balmumcu Caddesi",      "lat": 41.0605, "lon": 29.0075, "length_m": 280},
-    {"id": "BM02", "road": "Balmumcu Caddesi",      "lat": 41.0620, "lon": 29.0080, "length_m": 280},
-    {"id": "BM03", "road": "Balmumcu Kavşağı",      "lat": 41.0600, "lon": 29.0100, "length_m": 150},
-
-    # ── AKARETLER ─────────────────────────────────────────────────────────────
-    {"id": "AK01", "road": "Akaretler Caddesi",     "lat": 41.0440, "lon": 29.0005, "length_m": 250},
-    {"id": "AK02", "road": "Akaretler Caddesi",     "lat": 41.0450, "lon": 29.0010, "length_m": 250},
-
-    # ── ETİLER BAĞLANTISI ─────────────────────────────────────────────────────
-    {"id": "ET01", "road": "Etiler Caddesi",        "lat": 41.0640, "lon": 29.0050, "length_m": 300},
-    {"id": "ET02", "road": "Etiler Caddesi",        "lat": 41.0650, "lon": 29.0060, "length_m": 300},
-    {"id": "ET03", "road": "Nispetiye Caddesi",     "lat": 41.0630, "lon": 29.0040, "length_m": 280},
-
-    # ── ORTAKÖy / KURUÇEŞME ──────────────────────────────────────────────────
-    {"id": "OK01", "road": "Muallim Naci Caddesi",  "lat": 41.0490, "lon": 29.0150, "length_m": 300},
-    {"id": "OK02", "road": "Muallim Naci Caddesi",  "lat": 41.0505, "lon": 29.0155, "length_m": 300},
-    {"id": "OK03", "road": "Muallim Naci Caddesi",  "lat": 41.0520, "lon": 29.0160, "length_m": 300},
-    {"id": "OK04", "road": "Muallim Naci Caddesi",  "lat": 41.0535, "lon": 29.0165, "length_m": 300},
-    {"id": "OK05", "road": "Ortaköy İskele Meydanı","lat": 41.0479, "lon": 29.0180, "length_m": 150},
-
-    # ── 15 TEMMUZ ŞEHİTLER KÖPRÜSİ BAĞLANTI YOLLARI ─────────────────────────
-    {"id": "KP01", "road": "Köprü Bağlantı Güney",  "lat": 41.0458, "lon": 29.0330, "length_m": 400},
-    {"id": "KP02", "road": "Köprü Bağlantı Kuzey",  "lat": 41.0490, "lon": 29.0340, "length_m": 400},
-
-    # ── ABBASAĞA / SIRASELVILER ───────────────────────────────────────────────
-    {"id": "AB01", "road": "Abbasağa Caddesi",      "lat": 41.0435, "lon": 29.0020, "length_m": 250},
-    {"id": "AB02", "road": "Sıraselviler Caddesi",  "lat": 41.0415, "lon": 29.0010, "length_m": 280},
-
-    # ── BEBEK BAĞLANTISI ──────────────────────────────────────────────────────
-    {"id": "BE01", "road": "Bebek Caddesi",         "lat": 41.0580, "lon": 29.0130, "length_m": 300},
-    {"id": "BE02", "road": "Bebek Caddesi",         "lat": 41.0560, "lon": 29.0120, "length_m": 300},
-    {"id": "BE03", "road": "Bebek Caddesi",         "lat": 41.0545, "lon": 29.0115, "length_m": 300},
-
-    # ── YENİ MAHALLELERİN ARA SOKAKLARI ──────────────────────────────────────
-    {"id": "AR01", "road": "Sinanpaşa Mah. Yolu",   "lat": 41.0422, "lon": 29.0065, "length_m": 200},
-    {"id": "AR02", "road": "Türkali Mah. Yolu",      "lat": 41.0440, "lon": 29.0078, "length_m": 200},
-    {"id": "AR03", "road": "Vişnezade Caddesi",      "lat": 41.0408, "lon": 28.9998, "length_m": 220},
-    {"id": "AR04", "road": "Serencebey Yokuşu",      "lat": 41.0418, "lon": 29.0028, "length_m": 200},
-    {"id": "AR05", "road": "Köybaşı Caddesi",        "lat": 41.0555, "lon": 29.0108, "length_m": 250},
-]
-
-# Etkinlik zaman pencereleri — besiktas_events.csv'den otomatik yüklenir
-EVENT_WINDOWS: list[tuple[str, str]] = []
-
-OUTPUT_DIR = Path("tomtom_data")
-OUTPUT_DIR.mkdir(exist_ok=True)
-
+# Adresteki sayı ZOOM seviyesidir (0-22). TomTom noktayı bu zoom'da görünen en
+# yakın yola bağlar: zoom 10'da sadece büyük arterler görünür ve ara yollardaki
+# noktalar yüzlerce metre ötedeki artere bağlanır. 22 = en ayrıntılı seviye,
+# her nokta kendi yoluna bağlanır.
+TOMTOM_ZOOM = 22
 TOMTOM_FLOW_URL = (
     "https://api.tomtom.com/traffic/services/4"
-    "/flowSegmentData/absolute/10/json"
+    f"/flowSegmentData/absolute/{TOMTOM_ZOOM}/json"
 )
 
-# Varsayılan geohash hassasiyeti (karakter sayısı).
-# 7 karakter ≈ ~150m x 150m hücre boyutu — yol segmenti ölçeği için uygundur.
-GEOHASH_PRECISION = 7
+# Tüpraş Stadyumu'nun bulunduğu İBB hücresi — demo modunda etkinlik etkisi burada
+STADYUM_HUCRESI = "sxk97z"
+
+GUNLUK_KOTA = 2500
+
+# Etkinlik zaman pencereleri — --events ile verilen CSV'den yüklenir
+EVENT_WINDOWS: list[tuple[str, str]] = []
 
 
 # =============================================================================
-# GEOHASH — harici kütüphane gerektirmeyen saf Python implementasyonu
-# (standart base32 geohash algoritması)
+# NOKTALAR
 # =============================================================================
 
-_GEOHASH_BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz"
-
-
-def encode_geohash(lat: float, lon: float, precision: int = GEOHASH_PRECISION) -> str:
-    lat_range = [-90.0, 90.0]
-    lon_range = [-180.0, 180.0]
-    geohash = []
-    bits = [16, 8, 4, 2, 1]
-    bit = 0
-    ch = 0
-    even = True
-    while len(geohash) < precision:
-        if even:
-            mid = (lon_range[0] + lon_range[1]) / 2
-            if lon > mid:
-                ch |= bits[bit]
-                lon_range[0] = mid
-            else:
-                lon_range[1] = mid
-        else:
-            mid = (lat_range[0] + lat_range[1]) / 2
-            if lat > mid:
-                ch |= bits[bit]
-                lat_range[0] = mid
-            else:
-                lat_range[1] = mid
-        even = not even
-        if bit < 4:
-            bit += 1
-        else:
-            geohash.append(_GEOHASH_BASE32[ch])
-            bit = 0
-            ch = 0
-    return "".join(geohash)
+def load_points(path: Path = NOKTA_DOSYASI) -> list[dict]:
+    """
+    OSM_onemli_yollar.py'nin ürettiği nokta listesini okur.
+    Dosya yoksa ya da beklenen alanlar eksikse hata verir — eski/sabit bir
+    listeye sessizce geçmez.
+    """
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Nokta dosyası bulunamadı: {path}\n"
+            f"Önce OSM_onemli_yollar.py'yi çalıştırın.")
+    points = json.loads(path.read_text(encoding="utf-8"))
+    gerekli = {"id", "road", "lat", "lon", "cell", "geohash"}
+    for p in points:
+        eksik = gerekli - p.keys()
+        if eksik:
+            raise ValueError(f"{path} içinde eksik alan {sorted(eksik)}: {p}")
+    ids = [p["id"] for p in points]
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"{path} içinde tekrar eden id var")
+    if not points:
+        raise ValueError(f"{path} boş")
+    return points
 
 
 # =============================================================================
@@ -234,16 +139,16 @@ def is_event(dt: datetime) -> int:
 # =============================================================================
 
 def fetch_segment(seg: dict, api_key: str) -> dict | None:
+    """Başarılıysa flowSegmentData sözlüğü, değilse None döner."""
     params = {
         "key":   api_key,
         "point": f"{seg['lat']},{seg['lon']}",
         "unit":  "KMPH",
-        "zoom":  10,
     }
     try:
         r = requests.get(TOMTOM_FLOW_URL, params=params, timeout=10)
         if r.status_code == 200:
-            return r.json().get("flowSegmentData", {})
+            return r.json().get("flowSegmentData") or None
         if r.status_code == 403:
             print("\n  [HATA] API key geçersiz veya limit doldu!")
             return None
@@ -258,16 +163,31 @@ def fetch_segment(seg: dict, api_key: str) -> dict | None:
         return None
 
 
-def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool,
-              geohash_precision: int = GEOHASH_PRECISION) -> dict:
-    if demo or raw is None:
-        # Demo: saate göre gerçekçi simülasyon
-        h = ts.hour
-        is_peak = (7 <= h <= 9) or (17 <= h <= 19)
-        is_night = 0 <= h <= 5
-        near_vp  = seg["id"].startswith("VP")  # Vodafone Park yakını
+def _segment_coords(raw: dict) -> str | None:
+    """TomTom'un ölçtüğü yol parçasının geometrisi → '[[lat,lon],...]' metni."""
+    pts = (raw.get("coordinates") or {}).get("coordinate") or []
+    if not pts:
+        return None
+    return json.dumps([[round(p["latitude"], 6), round(p["longitude"], 6)] for p in pts],
+                      separators=(",", ":"))
 
-        if near_vp and is_event(ts):
+
+def _sayi(x):
+    return float(x) if isinstance(x, (int, float)) else float("nan")
+
+
+def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool) -> dict:
+    nan = float("nan")
+    frc, coords = None, None
+
+    if demo:
+        # Demo: saate göre simülasyon (sadece --demo ile; gerçek veriye karışmaz)
+        h = ts.hour
+        is_peak  = (7 <= h <= 9) or (17 <= h <= 19)
+        is_night = 0 <= h <= 5
+        stadyum  = seg["cell"] == STADYUM_HUCRESI
+
+        if stadyum and is_event(ts):
             factor = random.uniform(0.15, 0.35)   # maç/konser = çok yoğun
         elif is_peak:
             factor = random.uniform(0.30, 0.60)
@@ -276,44 +196,71 @@ def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool,
         else:
             factor = random.uniform(0.60, 0.90)
 
-        freeflow = random.randint(40, 65)
-        current  = max(5, int(freeflow * factor))
-        tt       = int(seg["length_m"] / max(current / 3.6, 0.1))
-        fft      = int(seg["length_m"] / max(freeflow / 3.6, 0.1))
+        length   = seg.get("length_m", 300)
+        freeflow = float(random.randint(40, 65))
+        current  = float(max(5, int(freeflow * factor)))
+        tt       = float(int(length / max(current / 3.6, 0.1)))
+        fft      = float(int(length / max(freeflow / 3.6, 0.1)))
         conf     = round(random.uniform(0.75, 1.0), 2)
         closure  = 0
+        ok       = 1
+    elif raw:
+        current  = _sayi(raw.get("currentSpeed"))
+        freeflow = _sayi(raw.get("freeFlowSpeed"))
+        tt       = _sayi(raw.get("currentTravelTime"))
+        fft      = _sayi(raw.get("freeFlowTravelTime"))
+        conf     = _sayi(raw.get("confidence"))
+        closure  = int(bool(raw.get("roadClosure", False)))
+        frc      = raw.get("frc")
+        coords   = _segment_coords(raw)
+        ok       = 1
     else:
-        current  = raw.get("currentSpeed",       0)
-        freeflow = raw.get("freeFlowSpeed",       1)
-        tt       = raw.get("currentTravelTime",   0)
-        fft      = raw.get("freeFlowTravelTime",  1)
-        conf     = raw.get("confidence",          0)
-        closure  = int(raw.get("roadClosure", False))
+        # İstek başarısız: değerler boş, ok=0 — simülasyonla DOLDURULMAZ
+        current = freeflow = tt = fft = conf = nan
+        closure = None
+        ok      = 0
 
-    congestion = round(min(max(1 - current / max(freeflow, 1), 0), 1), 4)
-    delay      = round((tt - fft) / max(fft, 1), 4)
+    if ok and freeflow == freeflow and freeflow > 0 and current == current:
+        congestion = round(min(max(1 - current / freeflow, 0), 1), 4)
+    else:
+        congestion = nan
+    if ok and fft == fft and fft > 0 and tt == tt:
+        delay = round((tt - fft) / fft, 4)
+    else:
+        delay = nan
 
     return {
-        # Zaman — date ve hour birleştirildi, minute kaldırıldı
+        # Zaman
         "timestamp":        ts.strftime("%Y-%m-%d %H:%M:%S"),
-        "date_hour":         ts.strftime("%Y-%m-%d %H"),
+        "date_hour":        ts.strftime("%Y-%m-%d %H"),
         "weekday":          ts.weekday(),          # 0=Pzt 6=Paz
         "is_weekend":       int(ts.weekday() >= 5),
         "is_event_time":    is_event(ts),
-        # Konum — segment kimliği/adı yok; lat, lon ve geohash var
+        # Nokta (tomtom_noktalar.json)
+        "id":               seg["id"],
+        "road":             seg["road"],
+        "highway":          seg.get("highway"),
+        "secim":            seg.get("secim"),
+        "cell":             seg["cell"],
+        "geohash":          seg["geohash"],        # eğitim verisindeki hücre geohash'i
         "lat":              seg["lat"],
         "lon":              seg["lon"],
-        "geohash":          encode_geohash(seg["lat"], seg["lon"], geohash_precision),
-        "length_m":         seg["length_m"],
+        "length_m":         seg.get("length_m"),
+        # Durum
+        "ok":               ok,                    # 1 = ölçüm var, 0 = istek başarısız
+        "demo":             int(demo),
         # Trafik metrikleri
         "current_speed":    current,
         "freeflow_speed":   freeflow,
-        "congestion_ratio": congestion,   # LSTM hedef değişkeni
+        "congestion_ratio": congestion,
         "delay_ratio":      delay,
         "travel_time_s":    tt,
         "freeflow_time_s":  fft,
         "confidence":       conf,
         "road_closure":     closure,
+        # TomTom'un gerçekte ölçtüğü yol parçası
+        "frc":              frc,                   # TomTom yol sınıfı (FRC0 = otoyol ...)
+        "segment_coords":   coords,                # '[[lat,lon],...]'
     }
 
 
@@ -321,59 +268,60 @@ def build_row(seg: dict, raw: dict | None, ts: datetime, demo: bool,
 # TOPLAMA DÖNGÜSÜ
 # =============================================================================
 
-def snapshot(api_key: str, demo: bool, geohash_precision: int) -> list[dict]:
+def snapshot(points: list[dict], api_key: str, demo: bool) -> list[dict]:
     ts   = datetime.now()
     rows = []
-    for seg in ROAD_SEGMENTS:
+    for seg in points:
         if demo:
             raw = None
         else:
             raw = fetch_segment(seg, api_key)
             time.sleep(0.15)   # rate limit koruması
-        rows.append(build_row(seg, raw, ts, demo, geohash_precision))
+        rows.append(build_row(seg, raw, ts, demo))
     return rows
 
 
-def append_csv(rows: list[dict], path: Path) -> None:
+def append_parquet(rows: list[dict], path: Path) -> None:
     if not rows:
         return
     df = pd.DataFrame(rows)
-    if not path.exists():
-        df.to_parquet(path, index=False, engine="pyarrow")
-    else:
-        pd.concat([pd.read_parquet(path), df]).to_parquet(path, index=False, engine="pyarrow")
+    if path.exists():
+        df = pd.concat([pd.read_parquet(path), df], ignore_index=True)
+    df.to_parquet(path, index=False, engine="pyarrow")
 
 
 def run(
     api_key: str,
-    interval_min: int  = 10,
+    points: list[dict],
+    interval_min: int  = 60,
     total_hours: int | None = None,
     demo: bool         = False,
     events_csv: str | None = None,
-    geohash_precision: int = GEOHASH_PRECISION,
 ) -> None:
 
     if events_csv:
         load_events(events_csv)
 
-    n_seg  = len(ROAD_SEGMENTS)
-    daily  = (60 // interval_min) * 24 * n_seg
-    out    = OUTPUT_DIR / f"besiktas_alansal_{datetime.now().strftime('%Y%m%d')}.parquet"
-    end_dt = datetime.now() + timedelta(hours=total_hours) if total_hours else None
+    OUTPUT_DIR.mkdir(exist_ok=True)
+
+    n_seg   = len(points)
+    n_cell  = len({p["geohash"] for p in points})
+    daily   = int(1440 / interval_min) * n_seg
+    end_dt  = datetime.now() + timedelta(hours=total_hours) if total_hours else None
 
     print(f"\n{'='*60}")
     print(f"  Beşiktaş Alansal Trafik Toplayıcı")
     print(f"{'='*60}")
-    print(f"  Nokta sayısı   : {n_seg}")
-    print(f"  Geohash hassa. : {geohash_precision} karakter")
+    print(f"  Nokta dosyası  : {NOKTA_DOSYASI}")
+    print(f"  Nokta sayısı   : {n_seg}  ({n_cell} hücre)")
     print(f"  Aralık         : {interval_min} dakika")
     print(f"  Tahmini istek  : ~{daily} istek/gün")
-    print(f"  Ücretsiz limit : 2500 istek/gün  "
-          f"({'✓ OK' if daily <= 2500 else '✗ AŞIYOR — aralığı artırın'})")
-    print(f"  Çıktı          : {out}")
+    print(f"  Ücretsiz limit : {GUNLUK_KOTA} istek/gün  "
+          f"({'✓ OK' if daily <= GUNLUK_KOTA else '✗ AŞIYOR — aralığı artırın'})")
+    print(f"  Çıktı klasörü  : {OUTPUT_DIR}")
     print(f"  Mod            : {'DEMO' if demo else 'CANLI'}\n")
 
-    snap_num  = 0
+    snap_num   = 0
     total_rows = 0
 
     try:
@@ -383,44 +331,49 @@ def run(
 
             snap_num += 1
             t0   = datetime.now()
-            rows = snapshot(api_key, demo, geohash_precision)
-            append_csv(rows, out)
+            out  = OUTPUT_DIR / f"besiktas_alansal_{t0.strftime('%Y%m%d')}.parquet"
+            rows = snapshot(points, api_key, demo)
+            append_parquet(rows, out)
             total_rows += len(rows)
+            basarisiz = sum(1 for r in rows if not r["ok"])
 
             elapsed = (datetime.now() - t0).total_seconds()
             print(
                 f"[{t0.strftime('%H:%M:%S')}] "
                 f"Snapshot #{snap_num:>4} | "
                 f"{len(rows):>3} nokta | "
+                f"{basarisiz:>3} başarısız | "
                 f"{elapsed:.1f}s | "
                 f"toplam {total_rows} satır"
             )
 
             wait = interval_min * 60 - elapsed
             if wait > 0:
+                if end_dt:
+                    wait = min(wait, max((end_dt - datetime.now()).total_seconds(), 0))
                 time.sleep(wait)
 
     except KeyboardInterrupt:
         pass
 
-    print(f"\n[Tamamlandı] {total_rows} satır → {out}")
+    print(f"\n[Tamamlandı] {total_rows} satır → {OUTPUT_DIR}")
 
 
 # =============================================================================
 # BİRLEŞTİRME
 # =============================================================================
 
-def merge_csvs(out: str = "besiktas_alansal_merged.parquet") -> None:
-    files = sorted(OUTPUT_DIR.glob("besiktas_alansal_*.parquet"))
+def merge_files(out: Path = MERGED_PATH) -> None:
+    files = sorted(OUTPUT_DIR.glob("besiktas_alansal_[0-9]*.parquet"))
     if not files:
-        print("[UYARI] Birleştirilecek dosya bulunamadı.")
+        print(f"[UYARI] {OUTPUT_DIR} içinde birleştirilecek dosya bulunamadı.")
         return
-    dfs = [pd.read_parquet(f) for f in files]
-    merged = pd.concat(dfs, ignore_index=True)
-    merged.drop_duplicates(subset=["timestamp", "geohash"], inplace=True)
-    merged.sort_values(["timestamp", "geohash"], inplace=True)
+    merged = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    # Aynı hücrede birden fazla nokta var → tekrar kontrolü nokta id'si ile
+    merged.drop_duplicates(subset=["timestamp", "id"], inplace=True)
+    merged.sort_values(["timestamp", "id"], inplace=True)
     merged.to_parquet(out, index=False, engine="pyarrow")
-    print(f"[Birleştirildi] {len(merged)} satır → {out}")
+    print(f"[Birleştirildi] {len(files)} dosya, {len(merged)} satır → {out}")
 
 
 # =============================================================================
@@ -433,32 +386,30 @@ def main() -> None:
     )
     p.add_argument("--key",      default="9dqoh1Ho4b8xTvYB3tnZCtGEb5qUS2S1",
                    help="TomTom API key")
-    p.add_argument("--interval", type=int, default=10,
-                   help="Veri aralığı (dakika, varsayılan: 10)")
+    p.add_argument("--interval", type=int, default=60,
+                   help="Veri aralığı (dakika, varsayılan: 60)")
     p.add_argument("--hours",    type=int, default=None,
                    help="Kaç saat çalışsın (varsayılan: süresiz)")
     p.add_argument("--demo",     action="store_true",
-                   help="Demo modu — API gerekmez")
+                   help="Demo modu — API gerekmez, simüle veri üretir")
     p.add_argument("--merge",    action="store_true",
                    help="Günlük parquet dosyalarını tek dosyada birleştir")
     p.add_argument("--events",   default=None,
-                   help="Etkinlik CSV (besiktas_events.csv)")
-    p.add_argument("--geohash-precision", type=int, default=GEOHASH_PRECISION,
-                   help=f"Geohash karakter uzunluğu (varsayılan: {GEOHASH_PRECISION})")
+                   help="Etkinlik CSV (start_datetime / end_datetime sütunları)")
     args = p.parse_args()
 
     if args.merge:
-        merge_csvs()
+        merge_files()
         return
 
     demo = args.demo or args.key == "DEMO"
     run(
-        api_key            = args.key,
-        interval_min       = args.interval,
-        total_hours        = args.hours,
-        demo               = demo,
-        events_csv         = args.events,
-        geohash_precision  = args.geohash_precision,
+        api_key      = args.key,
+        points       = load_points(),
+        interval_min = args.interval,
+        total_hours  = args.hours,
+        demo         = demo,
+        events_csv   = args.events,
     )
 
 

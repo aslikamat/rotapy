@@ -82,10 +82,12 @@ TRAFIK_COLS = [
 # HavaDurumuVerisi sütunları
 HAVA_COLS = [
     "temperature_c", "precipitation_mm", "wind_speed_kmh",
-    "cloud_cover_pct", "humidity_pct", "snow_depth_m",
+    "snow_depth_m",
     "weather_code",
-    "is_rainy", "is_snowy", "is_stormy", "is_foggy", "is_bad_weather",
+    "is_rainy", "is_snowy", "is_foggy", "is_bad_weather",
 ]
+# NOT: cloud_cover_pct, humidity_pct, is_stormy trafiği etkilemediği için
+# birleştirmeye alınmıyor. Hava dosyasında duruyorlar (is_foggy nemden türetilir).
 
 # EtkinlikVerisi sütunları (birleştirmede kullanılan)
 ETKINLIK_JOIN_COLS = [
@@ -472,6 +474,11 @@ def load_hava(path: str, trafik_df: pd.DataFrame) -> pd.DataFrame:
         merged = merged2
         print(f"  date_hour fallback ile {eksik:,} eksik satır dolduruldu")
 
+    # Eşleşme sayımı 0 ile doldurmadan ÖNCE yapılır: sonradan "!= 0" ile saymak
+    # gerçek 0.0 °C saatlerini de "eşleşmedi" diye sayıyordu.
+    toplam_eslesen  = int(merged["temperature_c"].notna().sum()) if "temperature_c" in merged.columns else 0
+    hava_eslesmeyen = len(merged) - toplam_eslesen
+
     for col in mevcut_hava_cols:
         if col in merged.columns:
             merged[col] = merged[col].fillna(0)
@@ -481,8 +488,6 @@ def load_hava(path: str, trafik_df: pd.DataFrame) -> pd.DataFrame:
         if col not in merged.columns:
             merged[col] = 0
 
-    toplam_eslesen  = merged["temperature_c"].ne(0).sum() if "temperature_c" in merged.columns else 0
-    hava_eslesmeyen = len(merged) - int(toplam_eslesen)
     print(f"  Toplam eşleşen: {toplam_eslesen:,} / {len(merged):,} satır ✓")
     merged.attrs["hava_eslesmeyen"] = hava_eslesmeyen
     return merged

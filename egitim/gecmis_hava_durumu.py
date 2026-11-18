@@ -34,85 +34,67 @@ Sütunlar:
     is_bad_weather      → Zorlu hava koşulu mu? (1/0) → ana LSTM feature
 
 Anlık versiyonla fark:
-    Aynı 58 nokta, aynı geohash, aynı sütun isimleri kullanılıyor.
-    Birleştirme (join) scriptinde her iki versiyon tutarlı şekilde
-    eşleşir — geohash + date_hour anahtarıyla.
+    Aynı sütun isimleri kullanılıyor. Noktalar trafik verisindeki 35
+    İBB hücresine göre güncellendi; sistem/anlik_hava_durumu.py hâlâ eski
+    58 noktayı kullanıyor (henüz güncellenmedi).
 
-Veri hacmi: 5 yıl × 58 nokta × saatlik ≈ 2.5 milyon satır.
+Veri hacmi: 5 yıl × 35 nokta × saatlik ≈ 1.5 milyon satır.
 Gerekirse --start/--end ile aralığı daraltın.
 """
 
 import requests
 import pandas as pd
 import argparse
+import sys
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
 # =============================================================================
 # BEŞİKTAŞ NOKTALARI
-# anlik_hava_durumu.py'deki AYNI 58 koordinat — join tutarlılığı için
+# Trafik verisindeki (besiktas_trafik_lstm.parquet) 35 İBB hücresi.
+# Koordinatlar her 7 karakterli geohash hücresinin merkezi — encode_geohash
+# trafikteki geohash'in AYNISINI üretir, böylece birlestirme.py'de
+# geohash + date_hour join'i birebir eşleşir.
 # =============================================================================
 
 POINTS = [
-    {"lat": 41.0428, "lon": 29.0052},
-    {"lat": 41.0455, "lon": 29.0058},
-    {"lat": 41.048,  "lon": 29.0063},
-    {"lat": 41.0505, "lon": 29.0068},
-    {"lat": 41.053,  "lon": 29.0072},
-    {"lat": 41.0555, "lon": 29.0075},
-    {"lat": 41.0432, "lon": 29.009},
-    {"lat": 41.045,  "lon": 29.0094},
-    {"lat": 41.0467, "lon": 29.0097},
-    {"lat": 41.0485, "lon": 29.01},
-    {"lat": 41.05,   "lon": 29.0103},
-    {"lat": 41.0515, "lon": 29.0106},
-    {"lat": 41.0395, "lon": 29.006},
-    {"lat": 41.04,   "lon": 29.0075},
-    {"lat": 41.0405, "lon": 29.009},
-    {"lat": 41.041,  "lon": 29.0105},
-    {"lat": 41.0385, "lon": 29.0095},
-    {"lat": 41.039,  "lon": 29.011},
-    {"lat": 41.0395, "lon": 29.008},
-    {"lat": 41.0375, "lon": 29.01},
-    {"lat": 41.045,  "lon": 29.002},
-    {"lat": 41.047,  "lon": 29.003},
-    {"lat": 41.049,  "lon": 29.004},
-    {"lat": 41.046,  "lon": 28.998},
-    {"lat": 41.0475, "lon": 28.999},
-    {"lat": 41.049,  "lon": 29.0},
-    {"lat": 41.0415, "lon": 29.004},
-    {"lat": 41.043,  "lon": 29.0035},
-    {"lat": 41.0445, "lon": 29.003},
-    {"lat": 41.0675, "lon": 29.011},
-    {"lat": 41.0681, "lon": 29.0116},
-    {"lat": 41.0665, "lon": 29.01},
-    {"lat": 41.0655, "lon": 29.009},
-    {"lat": 41.0605, "lon": 29.0075},
-    {"lat": 41.062,  "lon": 29.008},
-    {"lat": 41.06,   "lon": 29.01},
-    {"lat": 41.044,  "lon": 29.0005},
-    {"lat": 41.045,  "lon": 29.001},
-    {"lat": 41.064,  "lon": 29.005},
-    {"lat": 41.065,  "lon": 29.006},
-    {"lat": 41.063,  "lon": 29.004},
-    {"lat": 41.049,  "lon": 29.015},
-    {"lat": 41.0505, "lon": 29.0155},
-    {"lat": 41.052,  "lon": 29.016},
-    {"lat": 41.0535, "lon": 29.0165},
-    {"lat": 41.0479, "lon": 29.018},
-    {"lat": 41.0458, "lon": 29.033},
-    {"lat": 41.049,  "lon": 29.034},
-    {"lat": 41.0435, "lon": 29.002},
-    {"lat": 41.0415, "lon": 29.001},
-    {"lat": 41.058,  "lon": 29.013},
-    {"lat": 41.056,  "lon": 29.012},
-    {"lat": 41.0545, "lon": 29.0115},
-    {"lat": 41.0422, "lon": 29.0065},
-    {"lat": 41.044,  "lon": 29.0078},
-    {"lat": 41.0408, "lon": 28.9998},
-    {"lat": 41.0418, "lon": 29.0028},
-    {"lat": 41.0555, "lon": 29.0108},
+    {"lat": 41.02638, "lon": 28.98674},  # sxk97se
+    {"lat": 41.03188, "lon": 28.98674},  # sxk97te
+    {"lat": 41.02638, "lon": 28.99773},  # sxk97ue
+    {"lat": 41.03188, "lon": 28.99773},  # sxk97ve
+    {"lat": 41.03737, "lon": 28.98674},  # sxk97we
+    {"lat": 41.04286, "lon": 28.98674},  # sxk97xe
+    {"lat": 41.03737, "lon": 28.99773},  # sxk97ye
+    {"lat": 41.04286, "lon": 28.99773},  # sxk97ze
+    {"lat": 41.04836, "lon": 28.98674},  # sxk9e8e
+    {"lat": 41.05385, "lon": 28.98674},  # sxk9e9e
+    {"lat": 41.04836, "lon": 28.99773},  # sxk9ebe
+    {"lat": 41.05385, "lon": 28.99773},  # sxk9ece
+    {"lat": 41.05934, "lon": 28.98674},  # sxk9ede
+    {"lat": 41.06483, "lon": 28.98674},  # sxk9eee
+    {"lat": 41.05934, "lon": 28.99773},  # sxk9efe
+    {"lat": 41.06483, "lon": 28.99773},  # sxk9ege
+    {"lat": 41.07033, "lon": 28.98674},  # sxk9ese
+    {"lat": 41.07033, "lon": 28.99773},  # sxk9eue
+    {"lat": 41.04286, "lon": 29.00871},  # sxk9kpe
+    {"lat": 41.04286, "lon": 29.0197},  # sxk9kre
+    {"lat": 41.04836, "lon": 29.00871},  # sxk9s0e
+    {"lat": 41.05385, "lon": 29.00871},  # sxk9s1e
+    {"lat": 41.04836, "lon": 29.0197},  # sxk9s2e
+    {"lat": 41.05385, "lon": 29.0197},  # sxk9s3e
+    {"lat": 41.05934, "lon": 29.00871},  # sxk9s4e
+    {"lat": 41.06483, "lon": 29.00871},  # sxk9s5e
+    {"lat": 41.05934, "lon": 29.0197},  # sxk9s6e
+    {"lat": 41.06483, "lon": 29.0197},  # sxk9s7e
+    {"lat": 41.04836, "lon": 29.03069},  # sxk9s8e
+    {"lat": 41.05385, "lon": 29.03069},  # sxk9s9e
+    {"lat": 41.05934, "lon": 29.03069},  # sxk9sde
+    {"lat": 41.06483, "lon": 29.03069},  # sxk9see
+    {"lat": 41.07033, "lon": 29.00871},  # sxk9she
+    {"lat": 41.07033, "lon": 29.0197},  # sxk9ske
+    {"lat": 41.07033, "lon": 29.03069},  # sxk9sse
 ]
 
 TIMEZONE        = "Europe/Istanbul"
@@ -166,7 +148,7 @@ def classify_weather(code: int) -> dict:
     WMO kodunu trafik etkisi açısından sınıflandırır.
 
     0-3   : Açık / az bulutlu    → normal trafik
-    45-48 : Sis                  → yavaşlama
+    45-48 : Sis                  → yavaşlama (arşivde gelmez → sis_tespit)
     51-67 : Yağmur               → yoğunlaşma
     71-77 : Kar                  → ciddi yavaşlama
     80-82 : Sağanak              → yoğunlaşma
@@ -180,6 +162,23 @@ def classify_weather(code: int) -> dict:
         "is_foggy":       int(45 <= code <= 48),
         "is_bad_weather": int(code >= 45),
     }
+
+
+def sis_tespit(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Open-Meteo arşivi (ERA5) sis kodu (45-48) üretmiyor; bu yüzden is_foggy
+    hep 0 kalıyordu. Sisi meteorolojik koşullardan türetiyoruz:
+      nem >= %97 (çiy noktası ≈ sıcaklık) + rüzgâr < 10 km/s + yağış yok
+    WMO kodu 45-48 gelirse o da sis sayılır. is_bad_weather da güncellenir.
+    """
+    turetilen = (
+        (df["humidity_pct"] >= 97)
+        & (df["wind_speed_kmh"] < 10)
+        & (df["precipitation_mm"] == 0)
+    )
+    df["is_foggy"]       = (df["is_foggy"].astype(bool) | turetilen).astype(int)
+    df["is_bad_weather"] = (df["is_bad_weather"].astype(bool) | df["is_foggy"].astype(bool)).astype(int)
+    return df
 
 
 # =============================================================================
@@ -199,7 +198,7 @@ HOURLY_VARS = [
 
 
 def _multi_location_params(extra: dict) -> dict:
-    """58 noktanın tamamı için tek API isteği parametresi oluşturur."""
+    """Tüm noktalar için tek API isteği parametresi oluşturur."""
     params = {
         "latitude":        ",".join(str(p["lat"]) for p in POINTS),
         "longitude":       ",".join(str(p["lon"]) for p in POINTS),
@@ -238,51 +237,159 @@ def _parse_multi_location_response(data) -> pd.DataFrame:
 HISTORICAL_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 
-def fetch_historical(
-    start_date: str = "2020-01-01",
-    end_date:   str = "2024-12-31",
-) -> pd.DataFrame:
-    """
-    Belirtilen tarih aralığı için 58 noktanın saatlik geçmiş
-    hava verisini çeker. Yıllık parçalar halinde indirilir.
-    """
-    print(f"\n[Geçmiş Hava] {start_date} → {end_date} çekiliyor "
-          f"({len(POINTS)} nokta/geohash)...")
+# Open-Meteo ücretsiz limitleri: dakikalık / saatlik / günlük "ağırlıklı" çağrı.
+# Tüm noktalar × 1 yıl tek istek dakikalık limitin büyük kısmını yiyor; bu yüzden
+# parçalar arası bekliyoruz ve 429 gelirse tekrar deniyoruz.
+CHUNK_BEKLEME_SN = 65
+MAX_DENEME       = 6
 
+
+def _get_with_retry(params: dict) -> pd.DataFrame:
+    """
+    429 (limit aşımı) ve geçici ağ hatalarında bekleyip tekrar dener.
+    Tüm denemeler başarısız olursa HATA FIRLATIR — eksik yıllarla sessizce
+    kaydetmek yerine (eskiden yalnızca 2020 kaydediliyordu) durmak daha güvenli.
+    """
+    for deneme in range(1, MAX_DENEME + 1):
+        try:
+            r = requests.get(HISTORICAL_URL, params=params, timeout=120)
+        except requests.RequestException as e:
+            bekle = 30 * deneme
+            print(f"\n    [Ağ hatası] {e} → {bekle} sn sonra tekrar ({deneme}/{MAX_DENEME})", end=" ")
+            time.sleep(bekle)
+            continue
+
+        if r.status_code == 429:
+            reason = r.json().get("reason", "") if r.headers.get("content-type", "").startswith("application/json") else r.text
+            if "Daily" in reason:
+                raise RuntimeError(f"Open-Meteo günlük limit aşıldı, yarın tekrar deneyin: {reason}")
+            bekle = 3600 if "Hourly" in reason else 65
+            print(f"\n    [429] {reason} → {bekle} sn bekleniyor ({deneme}/{MAX_DENEME})", end=" ")
+            time.sleep(bekle)
+            continue
+
+        r.raise_for_status()
+        return _parse_multi_location_response(r.json())
+
+    raise RuntimeError(f"{params.get('start_date')} → {params.get('end_date')} parçası "
+                       f"{MAX_DENEME} denemede çekilemedi.")
+
+
+def _chunk_listesi(start_date: str, end_date: str) -> list[tuple[str, str]]:
+    """Tarih aralığını yıllık parçalara böler."""
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end   = datetime.strptime(end_date,   "%Y-%m-%d")
-
     chunks  = []
     current = start
     while current <= end:
         chunk_end = min(datetime(current.year, 12, 31), end)
-        chunks.append((
-            current.strftime("%Y-%m-%d"),
-            chunk_end.strftime("%Y-%m-%d"),
-        ))
+        chunks.append((current.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")))
         current = datetime(current.year + 1, 1, 1)
+    return chunks
 
-    all_dfs = []
+
+def _beklenen_satir(chunk_start: str, chunk_end: str) -> int:
+    """Parça tamsa olması gereken satır sayısı: saat sayısı × nokta sayısı."""
+    gun = (datetime.strptime(chunk_end, "%Y-%m-%d")
+           - datetime.strptime(chunk_start, "%Y-%m-%d")).days + 1
+    return gun * 24 * len(POINTS)
+
+
+def _parca_yolu(parca_dir: Path, chunk_start: str, chunk_end: str) -> Path:
+    return parca_dir / f"hava_{chunk_start}_{chunk_end}.parquet"
+
+
+def _parca_tam_mi(path: Path, chunk_start: str, chunk_end: str) -> bool:
+    if not path.exists():
+        return False
+    try:
+        n = len(pd.read_parquet(path, columns=["timestamp"]))
+    except Exception:
+        return False
+    return n == _beklenen_satir(chunk_start, chunk_end)
+
+
+def _mevcut_ciktidan_tohumla(out_path: str | None, chunks, parca_dir: Path) -> None:
+    """
+    Parça dosyası olmayan ama ana çıktı dosyasında tam olarak bulunan yılları
+    parça klasörüne çıkarır — böylece daha önce çekilmiş yıllar için
+    (ör. eski 2020 verisi) API'ye tekrar istek atılmaz.
+    """
+    if not out_path or not Path(out_path).exists():
+        return
+    eksikler = [(s, e) for s, e in chunks
+                if not _parca_tam_mi(_parca_yolu(parca_dir, s, e), s, e)]
+    if not eksikler:
+        return
+    try:
+        mevcut = pd.read_parquet(out_path)
+    except Exception:
+        return
+    ts = pd.to_datetime(mevcut["timestamp"])
+    for s, e in eksikler:
+        maske = (ts >= pd.Timestamp(s)) & (ts < pd.Timestamp(e) + pd.Timedelta(days=1))
+        parca = mevcut[maske]
+        if len(parca) == _beklenen_satir(s, e):
+            parca_dir.mkdir(parents=True, exist_ok=True)
+            parca.to_parquet(_parca_yolu(parca_dir, s, e), index=False, engine="pyarrow")
+            print(f"  [Tohum] {s} → {e} mevcut {out_path} dosyasından alındı ({len(parca):,} satır)")
+
+
+def _parcalari_birlestir(chunks, parca_dir: Path) -> pd.DataFrame:
+    """Diskteki tam parçaları birleştirir (eksik olanlar atlanır)."""
+    dfs = [pd.read_parquet(_parca_yolu(parca_dir, s, e))
+           for s, e in chunks if _parca_tam_mi(_parca_yolu(parca_dir, s, e), s, e)]
+    if not dfs:
+        return pd.DataFrame()
+    return (pd.concat(dfs, ignore_index=True)
+              .sort_values(["timestamp", "geohash"])
+              .reset_index(drop=True))
+
+
+def fetch_historical(
+    start_date: str = "2020-01-01",
+    end_date:   str = "2025-01-31",
+    parca_dir:  str | Path = "hava_parcalar",
+    out_path:   str | None = None,
+) -> pd.DataFrame:
+    """
+    Belirtilen tarih aralığı için tüm noktaların saatlik geçmiş hava verisini
+    yıllık parçalar halinde çeker. Her parça çekilir çekilmez
+    `parca_dir` içine kaydedilir; daha önce tam kaydedilmiş parçalar için
+    API'ye istek atılmaz. Limit aşılıp script yarıda kesilirse, tekrar
+    çalıştırıldığında yalnızca eksik yıllar çekilir.
+    """
+    parca_dir = Path(parca_dir)
+    print(f"\n[Geçmiş Hava] {start_date} → {end_date} çekiliyor "
+          f"({len(POINTS)} nokta/geohash, parçalar: {parca_dir})...")
+
+    chunks = _chunk_listesi(start_date, end_date)
+    _mevcut_ciktidan_tohumla(out_path, chunks, parca_dir)
+
+    istek_atildi = False
     for i, (chunk_start, chunk_end) in enumerate(chunks, 1):
+        yol = _parca_yolu(parca_dir, chunk_start, chunk_end)
         print(f"  [{i}/{len(chunks)}] {chunk_start} → {chunk_end}...", end=" ")
+        if _parca_tam_mi(yol, chunk_start, chunk_end):
+            print("zaten kayıtlı, atlandı ✓")
+            continue
+
+        if istek_atildi:
+            time.sleep(CHUNK_BEKLEME_SN)   # dakikalık limite takılmamak için
         params = _multi_location_params({
             "start_date": chunk_start,
             "end_date":   chunk_end,
         })
-        try:
-            r  = requests.get(HISTORICAL_URL, params=params, timeout=60)
-            r.raise_for_status()
-            df = _parse_multi_location_response(r.json())
-            all_dfs.append(df)
-            print(f"{len(df):,} satır ✓")
-        except Exception as e:
-            print(f"[HATA] {e}")
+        df = _process(_get_with_retry(params))
+        istek_atildi = True
 
-    if not all_dfs:
-        return pd.DataFrame()
+        parca_dir.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(yol, index=False, engine="pyarrow")
+        uyari = "" if len(df) == _beklenen_satir(chunk_start, chunk_end) else \
+            f" [UYARI: beklenen {_beklenen_satir(chunk_start, chunk_end):,}]"
+        print(f"{len(df):,} satır ✓ kaydedildi{uyari}")
 
-    merged = pd.concat(all_dfs, ignore_index=True)
-    return _process(merged)
+    return _parcalari_birlestir(chunks, parca_dir)
 
 
 # =============================================================================
@@ -315,6 +422,7 @@ def _process(df: pd.DataFrame) -> pd.DataFrame:
     df["weather_code"] = df["weather_code"].fillna(0).astype(int)
     weather_flags = df["weather_code"].apply(classify_weather).apply(pd.Series)
     df = pd.concat([df, weather_flags], axis=1)
+    df = sis_tespit(df)
 
     # Sütun sırası — anlik_hava_durumu.py ile AYNI
     cols = [
@@ -374,16 +482,30 @@ def save(df: pd.DataFrame, path: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Open-Meteo Beşiktaş Geçmiş Hava Verisi (geohash bazlı, 58 nokta)"
+        description="Open-Meteo Beşiktaş Geçmiş Hava Verisi (geohash bazlı, 35 trafik hücresi)"
     )
     parser.add_argument("--start", default="2020-01-01",
                         help="Başlangıç tarihi (varsayılan: 2020-01-01)")
-    parser.add_argument("--end",   default="2024-12-31",
-                        help="Bitiş tarihi (varsayılan: 2024-12-31)")
+    parser.add_argument("--end",   default="2025-01-31",
+                        help="Bitiş tarihi (varsayılan: 2025-01-31, trafik verisinin sonu)")
     parser.add_argument("--out",   default="gecmis_hava_durumu.parquet")
+    parser.add_argument("--parca-dir", default=None,
+                        help="Yıllık parçaların kaydedileceği klasör "
+                             "(varsayılan: çıktı dosyasının yanında hava_parcalar/)")
     args = parser.parse_args()
+    parca_dir = Path(args.parca_dir) if args.parca_dir else Path(args.out).parent / "hava_parcalar"
 
-    df = fetch_historical(args.start, args.end)
+    try:
+        df = fetch_historical(args.start, args.end, parca_dir=parca_dir, out_path=args.out)
+    except RuntimeError as e:
+        print(f"\n  [HATA] {e}")
+        print("  Çekilen parçalar kaydedildi; tekrar çalıştırınca yalnızca eksikler çekilecek.")
+        kismi = _parcalari_birlestir(_chunk_listesi(args.start, args.end), parca_dir)
+        if not kismi.empty:
+            print("  Şimdiye kadarki parçalar ana dosyaya yazılıyor (kısmi):")
+            save(kismi, args.out)
+        sys.exit(1)
+
     save(df, args.out)
 
     if not df.empty:

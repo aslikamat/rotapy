@@ -53,11 +53,9 @@ FEATURE_COLS = [
     "temperature_c",
     "precipitation_mm",
     "wind_speed_kmh",
-    "cloud_cover_pct",         # yeni eklendi
-    "humidity_pct",            # yeni eklendi
     "is_rainy",
     "is_snowy",
-    "is_stormy",               # yeni eklendi
+    "is_foggy",                # sis — nem/rüzgârdan türetilir (gecmis_hava_durumu.sis_tespit)
     "is_bad_weather",
 ]
 

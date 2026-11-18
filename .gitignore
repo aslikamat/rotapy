@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+egitim/hava_parcalar/
+sistem/osm_ham.json
+sistem/tomtom_data/
+*.parquet
+*.keras
+*.pkl
+egitim/besiktas_lstm_model/

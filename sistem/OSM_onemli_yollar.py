@@ -1,31 +1,44 @@
 """
 OSM → TomTom Sorgu Noktası Seçici
 ==================================
-İBB hücreleri (6 karakterli geohash, ~600 m x 900 m; Asya yakası çıkarıldıktan sonra 33) için OpenStreetMap'ten
-ana yolları (motorway/trunk/primary/secondary/tertiary) bulur ve hücre başına
-en önemli N yoldan birer TomTom sorgu noktası seçer.
+Eğitim verisindeki İBB hücreleri (6 karakterli geohash, ~600 m x 900 m) için
+OpenStreetMap'ten ana yolları (motorway/trunk/primary/secondary/tertiary) bulur ve
+hücre başına en önemli N yoldan birer TomTom sorgu noktası seçer.
 
-Hücre listesi: Ocak 2020 → Ocak 2025 İBB verisinde 59 ayda görünen 41 hücre
-(kontrol.py çıktısı; 2020-07 ve 2020-08 dosyaları yok). Sadece 1 ayda görünen
-4 hücre dışarıda. Ayrıca Asya yakasındaki/deniz hücreleri (HARIC_HUCRELER) çıkarıldı.
+Hücre listesi: varsayılan olarak eğitim verisinden okunur
+(egitim/besiktas_trafik_lstm.parquet → benzersiz geohash[:6], şu an 35 hücre).
+Böylece canlı veri, modelin eğitimde gördüğü hücrelerle birebir aynı olur
+(Üsküdar tarafı hücreleri eğitimde hariç tutulduğu için burada da yoktur).
+Ayrıca HARIC_HUCRELER (Asya yakası / deniz) her kaynakta ayrıca çıkarılır —
+eğitim verisi değişirse bile bu hücreler yanlışlıkla girmesin diye.
 OSM'e de SADECE kalan hücrelerin içindeki yollar sorulur.
-
-Boş kalan hücre (ör. büyük kısmı deniz): önce hücre içinde daha kısa (>=20 m) ana yola,
-sonra --minor-fallback ile sokağa bakılır; hücre başına 1 nokta seçilir.
 
 Neden: İBB bir hücre için o hücredeki yolların toplanmış değerini veriyor,
 TomTom ise noktaya en yakın TEK yolu. Hücre başına birkaç ana yoldan
 örnek alıp ortalamasını almak iki veriyi birbirine yaklaştırır.
 
+Seçim kuralları:
+  - Hücre başına ilk 2 yol: önem sırasına (motorway > trunk > primary >
+    secondary > tertiary) ve hücre içi uzunluğa göre.
+  - 3. yol: sadece secondary veya üstü VE hücre içinde en az 200 m ise
+    (--ucuncu-min-sinif / --ucuncu-min-uzunluk). Değilse hücre 2 noktada kalır.
+  - ZORUNLU_YOLLAR: bu kurallardan bağımsız eklenir (en uzun olduğu hücreye),
+    --max-points sınırında da korunur.
+  - Boş kalan hücre (ör. büyük kısmı deniz): önce hücre içinde daha kısa
+    (>= --bos-min-len, varsayılan 20 m) ana yola, sonra --minor-fallback ile
+    sokağa bakılır; hücre başına --bos-per-cell (varsayılan 1) nokta seçilir.
+    Bu noktalar çıktıda "yedek" sütunuyla işaretlenir.
+
 Kurulum:
     pip install requests
 
 Kullanım:
-    python osm_nokta_sec.py                          # gömülü 41 hücre, hücre başına 2 yol
-    python osm_nokta_sec.py --per-cell 3
-    python osm_nokta_sec.py --max-points 100         # kota için üst sınır
+    python osm_nokta_sec.py                          # eğitim verisindeki hücreler, hücre başına 3 yol, en fazla 100 nokta
+    python osm_nokta_sec.py --per-cell 2
+    python osm_nokta_sec.py --max-points 0           # nokta sınırını kaldır
     python osm_nokta_sec.py --minor-fallback         # kısa ana yol da yoksa boş hücreye sokak ekle
     python osm_nokta_sec.py --bos-min-len 10         # boş hücrelerde daha kısa yolları da kabul et
+    python osm_nokta_sec.py --haric ""               # HARIC_HUCRELER'i uygulama
     python osm_nokta_sec.py --refresh                # OSM'den yeniden indir
     python osm_nokta_sec.py --hucreler ibb_hucreler.csv --min-ay 12   # listeyi CSV'den oku
 
@@ -106,22 +119,14 @@ def decode_bbox(gh: str) -> tuple:
 # HÜCRELER (İBB verisinden)
 # =============================================================================
 
-# Ocak 2020 → Ocak 2025 İBB verisinde 59 ayda görünen 41 hücre (kontrol.py çıktısı).
-# Sadece 1 ayda görünen sxk97u, sxk97v, sxk9kj, sxk9kn bilerek dışarıda.
-IBB_HUCRELER = (
-    "sxk97s", "sxk97t", "sxk97w", "sxk97x", "sxk97y", "sxk97z",
-    "sxk9e8", "sxk9e9", "sxk9eb", "sxk9ec", "sxk9ed", "sxk9ee",
-    "sxk9ef", "sxk9eg", "sxk9es", "sxk9eu", "sxk9kh", "sxk9kk",
-    "sxk9km", "sxk9kp", "sxk9kq", "sxk9kr", "sxk9ks", "sxk9kt",
-    "sxk9kw", "sxk9kx", "sxk9s0", "sxk9s1", "sxk9s2", "sxk9s3",
-    "sxk9s4", "sxk9s5", "sxk9s6", "sxk9s7", "sxk9s8", "sxk9s9",
-    "sxk9sd", "sxk9se", "sxk9sh", "sxk9sk", "sxk9ss",
-)
-
+# Varsayılan hücre kaynağı: modelin eğitildiği trafik verisi.
+# Script nereden çalıştırılırsa çalıştırılsın proje köküne göre bulunur.
+EGITIM_TRAFIK = Path(__file__).resolve().parent.parent / "egitim" / "besiktas_trafik_lstm.parquet"
 
 # Dışarıda bırakılan hücreler: Asya yakası (Üsküdar/Kuzguncuk/Beylerbeyi tarafı) ve
 # Boğaz'ın ortasında kalan deniz hücresi. Kutunun güneydoğu bloğu + 15 Temmuz Köprüsü'nün
 # Asya ayağı. Koordinat ve yol adlarından belirlendi; --haric ile değiştirilebilir.
+# egitim/gecmis_trafik_ibb_speed.py'deki HARIC_HUCRELER ile aynı liste.
 #   sxk9kh  Üsküdar Harem Sahil Yolu, Doğancılar Cd.
 #   sxk9kk  Selmani Pak Cd., Hakimiyeti Milliye Cd.
 #   sxk9km  Paşa Limanı Cd., Hüseyin Baykara Sk.
@@ -137,38 +142,58 @@ HARIC_HUCRELER = (
 )
 
 
+def _hucre_eslemesi(geohashler) -> dict:
+    """
+    7 karakterli geohash'lerden {hücre6: geohash7} eşlemesi kurar.
+    Değerler HESAPLANMAZ, kaynaktaki geohash'in aynısı kullanılır: hücre merkezi
+    iki alt hücrenin sınırına denk geldiği için yeniden hesaplamak farklı bir
+    7. karakter verebiliyor (ör. sxk9s3e yerine sxk9s37).
+    Bir hücrede birden fazla 7 karakterli geohash varsa hangisinin eğitimdeki
+    karşılık olduğu belirsizdir → hata verir.
+    """
+    eslesme = {}
+    for g in geohashler:
+        if not isinstance(g, str) or len(g) < 7:
+            continue
+        eslesme.setdefault(g[:6], set()).add(g[:7])
+    coklu = {c: sorted(v) for c, v in eslesme.items() if len(v) > 1}
+    if coklu:
+        raise ValueError(f"Bazı hücrelerde birden fazla 7 karakterli geohash var: {coklu}")
+    return {c: next(iter(v)) for c, v in eslesme.items()}
+
+
 def load_cells(kaynak: str = None, min_ay: int = 12, haric=None) -> tuple:
     """
-    Hücre listesi (6 karakterli geohash):
-      kaynak yok  → gömülü 41 hücre
-      kaynak .csv → kontrol.py'nin ibb_hucreler.csv'si; ay_sayisi >= min_ay olanlar
-      kaynak .parquet → içindeki tüm benzersiz geohash[:6] (nadir hücre filtresi YOK)
+    Hücre listesi (6 karakterli geohash) ve her hücrenin kaynaktaki 7 karakterli
+    geohash'i. Dönüş: (hücreler, {hücre6: geohash7}, kaynak açıklaması)
+      kaynak yok      → eğitim verisi (EGITIM_TRAFIK) içindeki tüm benzersiz geohash'ler
+      kaynak .csv     → kontrol.py'nin ibb_hucreler.csv'si; ay_sayisi >= min_ay olanlar
+                        (geohash7 sütunundan)
+      kaynak .parquet → içindeki tüm benzersiz geohash'ler (nadir hücre filtresi YOK)
     haric: dışarıda bırakılacak hücreler (None → HARIC_HUCRELER, [] → hiçbiri).
-    Dosya verilip bulunamazsa hata verir, sessizce başka listeye geçmez.
+    Dosya bulunamazsa hata verir, sessizce başka listeye geçmez.
     """
-    if kaynak:
-        p = Path(kaynak)
-        if not p.exists():
-            raise FileNotFoundError(f"Hücre dosyası bulunamadı: {kaynak}")
-        if p.suffix.lower() == ".csv":
-            with open(p, encoding="utf-8-sig", newline="") as f:
-                rows = list(csv.DictReader(f))
-            cells = sorted({r["cell6"] for r in rows if int(r["ay_sayisi"]) >= min_ay})
-            etiket = f"{kaynak} (ay_sayisi >= {min_ay})"
-        else:
-            import pandas as pd
-            gh = pd.read_parquet(p, columns=["geohash"])["geohash"]
-            cells = sorted({g[:6] for g in gh.dropna().unique() if len(g) >= 6})
-            etiket = f"{kaynak} (parquet, nadir hücre filtresi yok)"
+    p = Path(kaynak) if kaynak else EGITIM_TRAFIK
+    if not p.exists():
+        raise FileNotFoundError(f"Hücre dosyası bulunamadı: {p}")
+    if p.suffix.lower() == ".csv":
+        with open(p, encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.DictReader(f))
+        eslesme = _hucre_eslemesi(r["geohash7"] for r in rows if int(r["ay_sayisi"]) >= min_ay)
+        etiket = f"{p} (ay_sayisi >= {min_ay})"
     else:
-        cells = sorted(IBB_HUCRELER)
-        etiket = "Gömülü İBB listesi (2020-01 → 2025-01, 59 ayda görünen 41 hücre)"
+        import pandas as pd
+        gh = pd.read_parquet(p, columns=["geohash"])["geohash"]
+        eslesme = _hucre_eslemesi(gh.dropna().unique())
+        etiket = f"{p} (parquet, nadir hücre filtresi yok)"
 
     haric = set(HARIC_HUCRELER if haric is None else haric)
-    kalan = [c for c in cells if c not in haric]
-    if len(kalan) != len(cells):
-        etiket += f"; {len(cells) - len(kalan)} hücre hariç (Asya yakası/deniz)"
-    return kalan, etiket
+    cikan = [c for c in eslesme if c in haric]
+    for c in cikan:
+        del eslesme[c]
+    if cikan:
+        etiket += f"; {len(cikan)} hücre hariç (Asya yakası/deniz)"
+    return sorted(eslesme), eslesme, etiket
 
 
 # =============================================================================
@@ -189,13 +214,22 @@ CLASS_RANK = {
 }
 MAIN_MAX_RANK = 4
 
+# Otomatik seçime girmeyen ama yerel trafik için önemli yollar — her zaman eklenir.
+# Ad OSM'deki "name" etiketiyle birebir aynı olmalı. Nokta, yolun hücre içinde
+# en uzun olduğu hücreye (o parçanın ortasına) konur. Bulunamazsa uyarı verilir.
+ZORUNLU_YOLLAR = (
+    "Süleyman Seba Caddesi",    # stadyumun yanı (eski adı Spor Caddesi, Akaretler)
+    "Ihlamurdere Caddesi",      # Beşiktaş çarşı → Ihlamur
+    "Şair Nedim Caddesi",       # Beşiktaş çarşı içi
+    "Serencebey Yokuşu",        # Barbaros → Yıldız (OSM'de residential)
+    "Ortabahçe Caddesi",        # Beşiktaş çarşı içi
+    "Balmumcu Deresi Sokağı",   # Balmumcu
+)
 
-def build_query(cells: list, include_minor: bool, sadece_sokak: bool = False) -> str:
+
+def build_query(cells: list, include_minor: bool) -> str:
     """Sadece verilen hücrelerin içindeki yolları ister (hücre başına bir kutu)."""
-    if sadece_sokak:
-        classes = MINOR_CLASSES
-    else:
-        classes = MAIN_CLASSES + ("|" + MINOR_CLASSES if include_minor else "")
+    classes = MAIN_CLASSES + ("|" + MINOR_CLASSES if include_minor else "")
     parts = []
     for c in cells:
         s, n, w, e = decode_bbox(c)
@@ -307,10 +341,13 @@ def groups_for_cell(cell_bbox: tuple, ways: list, step: float = 10.0) -> dict:
 
 
 def select_for_cell(groups: dict, per_cell: int, min_len: float,
-                    min_sep: float, minor_fallback: bool) -> list:
+                    min_sep: float, minor_fallback: bool,
+                    ek_max_rank: int = 99, ek_min_len: float = 0.0) -> list:
     """
     Önce ana yollar (rank <= tertiary), önem sırasına ve hücre içi uzunluğa göre.
     Hücrede hiç ana yol yoksa ve minor_fallback açıksa sokaklardan seçer.
+    İlk 2 seçimden sonrakiler (3., 4. ...) ancak rank <= ek_max_rank ve hücre içi
+    uzunluk >= ek_min_len ise alınır; böylece zayıf yollar için kota harcanmaz.
     """
     pool = [g for g in groups.values()
             if g["length"] >= min_len and g["rank"] <= MAIN_MAX_RANK]
@@ -320,6 +357,8 @@ def select_for_cell(groups: dict, per_cell: int, min_len: float,
 
     chosen = []
     for g in pool:
+        if len(chosen) >= 2 and (g["rank"] > ek_max_rank or g["length"] < ek_min_len):
+            continue
         lat, lon = middle_point(g["best_pts"])
         # İki nokta çok yakınsa TomTom ikisini de aynı yola oturtur — atla
         if any(meters(lat, lon, c["lat"], c["lon"]) < min_sep for c in chosen):
@@ -339,8 +378,7 @@ def select_for_cell(groups: dict, per_cell: int, min_len: float,
 # ANA AKIŞ
 # =============================================================================
 
-def get_osm(cache_path: Path, cells: list, include_minor: bool, refresh: bool,
-            sadece_sokak: bool = False) -> dict:
+def get_osm(cache_path: Path, cells: list, include_minor: bool, refresh: bool) -> dict:
     """Önbellek bu hücreleri kapsıyorsa onu kullanır, yoksa OSM'den indirir."""
     if cache_path.exists() and not refresh:
         data = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -353,16 +391,14 @@ def get_osm(cache_path: Path, cells: list, include_minor: bool, refresh: bool,
             w, e = min(b[2] for b in bb), max(b[3] for b in bb)
             mb = meta.get("bbox", [1e9, -1e9, 1e9, -1e9])
             kapsiyor = mb[0] <= s and mb[1] >= n and mb[2] <= w and mb[3] >= e
-        ayni_tur = bool(meta.get("sadece_sokak")) == sadece_sokak
-        if kapsiyor and ayni_tur and (meta.get("minor") or not include_minor):
+        if kapsiyor and (meta.get("minor") or not include_minor):
             print(f"  Önbellek kullanılıyor: {cache_path}  (yenilemek için --refresh)")
             return data
         print("  Önbellek bu istek için yetersiz, OSM'den yeniden indiriliyor...")
 
     print(f"  OSM (Overpass) sorgulanıyor ({len(cells)} hücre), 10-60 sn sürebilir...")
-    data = fetch_overpass(build_query(cells, include_minor, sadece_sokak))
-    data["_meta"] = {"cells": sorted(cells), "minor": include_minor or sadece_sokak,
-                     "sadece_sokak": sadece_sokak}
+    data = fetch_overpass(build_query(cells, include_minor))
+    data["_meta"] = {"cells": sorted(cells), "minor": include_minor}
     cache_path.write_text(json.dumps(data), encoding="utf-8")
     return data
 
@@ -370,28 +406,34 @@ def get_osm(cache_path: Path, cells: list, include_minor: bool, refresh: bool,
 def main() -> None:
     ap = argparse.ArgumentParser(description="OSM → TomTom sorgu noktası seçici")
     ap.add_argument("--hucreler", default=None,
-                    help="ibb_hucreler.csv (kontrol.py çıktısı); verilmezse gömülü 41 hücre")
+                    help="Hücre kaynağı: .parquet (geohash sütunu) veya kontrol.py'nin "
+                         "ibb_hucreler.csv'si; verilmezse eğitim verisi "
+                         "(egitim/besiktas_trafik_lstm.parquet)")
     ap.add_argument("--haric", default=None,
                     help="Dışarıda bırakılacak hücreler, virgülle ayrılmış. Varsayılan: Asya "
-                         "yakası listesi. Hiçbirini çıkarmamak için: --haric \"\"")
+                         "yakası listesi (HARIC_HUCRELER). Hiçbirini çıkarmamak için: --haric \"\"")
     ap.add_argument("--min-ay", type=int, default=12,
                     help="--hucreler CSV ise: en az kaç ayda görünen hücreler (varsayılan 12)")
-    ap.add_argument("--per-cell", type=int, default=2,
-                    help="Hücre başına en fazla kaç yol (varsayılan 2)")
+    ap.add_argument("--per-cell", type=int, default=3,
+                    help="Hücre başına en fazla kaç yol (varsayılan 3; rota önerisi için yol çeşitliliği)")
+    ap.add_argument("--ucuncu-min-sinif", default="secondary",
+                    choices=[k for k, v in sorted(CLASS_RANK.items(), key=lambda x: x[1])],
+                    help="3. (ve sonraki) yol en az bu sınıfta olmalı (varsayılan secondary)")
+    ap.add_argument("--ucuncu-min-uzunluk", type=float, default=200,
+                    help="3. (ve sonraki) yol hücre içinde en az bu kadar metre olmalı (varsayılan 200)")
     ap.add_argument("--min-len", type=float, default=80,
                     help="Hücre içinde en az bu kadar metre yol olmalı (varsayılan 80)")
     ap.add_argument("--min-sep", type=float, default=100,
                     help="Aynı hücredeki iki nokta arası en az metre (varsayılan 100)")
-    ap.add_argument("--max-points", type=int, default=None,
-                    help="Toplam nokta üst sınırı (API kotası için)")
+    ap.add_argument("--max-points", type=int, default=100,
+                    help="Toplam nokta üst sınırı (varsayılan 100: saatlik sorguda 2.400 istek/gün, "
+                         "TomTom ücretsiz kotası ~2.500; 0 = sınır yok)")
     ap.add_argument("--bos-per-cell", type=int, default=1,
                     help="Hiç noktası olmayan hücreler için seçilecek nokta sayısı (varsayılan 1)")
     ap.add_argument("--bos-min-len", type=float, default=20,
                     help="Boş hücrelerde kabul edilen en kısa yol uzunluğu, metre (varsayılan 20)")
     ap.add_argument("--minor-fallback", action="store_true",
-                    help="Kısa ana yol da yoksa, SADECE boş kalan hücreler için ayrı küçük "
-                         "bir sorguyla sokak ekle")
-    ap.add_argument("--cache-sokak", default="osm_ham_sokak.json")
+                    help="Kısa ana yol da yoksa, SADECE boş kalan hücrelere sokak ekle")
     ap.add_argument("--cache", default="osm_ham.json")
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--out", default="tomtom_noktalar",
@@ -400,71 +442,100 @@ def main() -> None:
 
     print("\n[1/3] İBB hücreleri belirleniyor...")
     haric = None if args.haric is None else [x.strip() for x in args.haric.split(",") if x.strip()]
-    cells, kaynak = load_cells(args.hucreler, args.min_ay, haric)
+    cells, hucre_geohash, kaynak = load_cells(args.hucreler, args.min_ay, haric)
     print(f"  Kaynak: {kaynak}")
     print(f"  {len(cells)} adet 6 karakterli hücre")
 
     bboxes = {c: decode_bbox(c) for c in cells}
 
     print("\n[2/3] OpenStreetMap yolları alınıyor...")
-    data = get_osm(Path(args.cache), cells, False, args.refresh)
+    # Sokaklar da indirilir (zorunlu yollardan bazıları ve --minor-fallback için).
+    # Otomatik seçim yine sadece ana yollarla yapılır (aşağıdaki ways_secim);
+    # sokaklar sadece zorunlu yollarda ve boş hücre yedeğinde kullanılır.
+    indir_minor = args.minor_fallback or bool(ZORUNLU_YOLLAR)
+    data = get_osm(Path(args.cache), cells, indir_minor, args.refresh)
     ways = [el for el in data.get("elements", []) if el.get("type") == "way"]
-    print(f"  {len(ways):,} yol parçası")
+    ways_secim = [el for el in ways
+                  if CLASS_RANK.get(el.get("tags", {}).get("highway"), 99) <= MAIN_MAX_RANK]
+    print(f"  {len(ways):,} yol parçası ({len(ways_secim):,} tanesi otomatik seçimde)")
 
     print("\n[3/3] Her hücre için nokta seçiliyor...")
+    ek_max_rank = CLASS_RANK[args.ucuncu_min_sinif]
     points, bos_hucre, yedekler = [], [], []
 
-    def ekle(cell: str, chosen: list, yedek: str = "") -> None:
-        for k, c in enumerate(chosen, 1):
-            points.append({
-                "id": f"{cell}-{k}", "road": c["road"],
-                "lat": c["lat"], "lon": c["lon"], "length_m": c["length_m"],
-                "cell": cell, "geohash": encode_geohash(c["lat"], c["lon"], 7),
-                "highway": c["highway"], "yedek": yedek,
-                "_pick": k, "_rank": c["_rank"], "_len": c["_len"],
-            })
-            if yedek:
-                yedekler.append((cell, c["road"], c["highway"], c["length_m"], yedek))
+    def nokta_ekle(cell: str, k, c: dict, zorunlu: bool, yedek: str = "") -> None:
+        points.append({
+            "id": f"{cell}-{k}", "road": c["road"],
+            "lat": c["lat"], "lon": c["lon"], "length_m": c["length_m"],
+            # geohash = eğitim verisindeki hücre geohash'i (noktanın kendisinin değil);
+            # TomTom ölçümleri bu etiketle kaydedilip hücre bazında ortalanacak
+            "cell": cell, "geohash": hucre_geohash[cell],
+            "highway": c["highway"],
+            "secim": "zorunlu" if zorunlu else "otomatik",
+            "yedek": yedek,   # boş hücre yedeğiyle eklendiyse nedeni, değilse ""
+            # zorunlu noktalar _pick=0 → --max-points kesiminde en son çıkarılır
+            "_pick": 0 if zorunlu else k, "_rank": c["_rank"], "_len": c["_len"],
+        })
+        if yedek:
+            yedekler.append((cell, c["road"], c["highway"], c["length_m"], yedek))
 
     for cell in cells:
-        groups = groups_for_cell(bboxes[cell], ways)
-        chosen = select_for_cell(groups, args.per_cell, args.min_len, args.min_sep, False)
+        groups = groups_for_cell(bboxes[cell], ways_secim)
+        chosen = select_for_cell(groups, args.per_cell, args.min_len,
+                                 args.min_sep, False,
+                                 ek_max_rank, args.ucuncu_min_uzunluk)
         yedek = ""
-        if not chosen:   # 1. yedek: aynı veriden, daha kısa ana yol kabul et
+        if not chosen:   # 1. yedek: daha kısa ana yolu da kabul et
             chosen = select_for_cell(groups, args.bos_per_cell, args.bos_min_len,
                                      args.min_sep, False)
             yedek = f"kısa ana yol (>= {args.bos_min_len:g} m)"
+        if not chosen and args.minor_fallback:   # 2. yedek: sokak
+            groups = groups_for_cell(bboxes[cell], ways)
+            chosen = select_for_cell(groups, args.bos_per_cell, args.bos_min_len,
+                                     args.min_sep, True)
+            yedek = "sokak (ana yol yok)"
         if not chosen:
             bos_hucre.append(cell)
             continue
-        ekle(cell, chosen, yedek)
+        for k, c in enumerate(chosen, 1):
+            nokta_ekle(cell, k, c, zorunlu=False, yedek=yedek)
 
-    if bos_hucre and args.minor_fallback:   # 2. yedek: sadece bu hücreler için sokak sorgusu
-        print(f"  Ana yolu olmayan {len(bos_hucre)} hücre için sokak sorgusu: "
-              f"{', '.join(bos_hucre)}")
-        sdata = get_osm(Path(args.cache_sokak), bos_hucre, True, args.refresh,
-                        sadece_sokak=True)
-        sways = [el for el in sdata.get("elements", []) if el.get("type") == "way"]
-        for cell in list(bos_hucre):
-            groups = groups_for_cell(bboxes[cell], sways)
-            chosen = select_for_cell(groups, args.bos_per_cell, args.bos_min_len,
-                                     args.min_sep, True)
-            if chosen:
-                ekle(cell, chosen, "sokak (ana yol yok)")
-                bos_hucre.remove(cell)
+    # ── Zorunlu yollar ───────────────────────────────────────────────────────
+    tum_gruplar = {cell: groups_for_cell(bboxes[cell], ways) for cell in cells}
+    zorunlu_eklenen, zorunlu_zaten, zorunlu_yok = [], [], []
+    for ad in ZORUNLU_YOLLAR:
+        adaylar = [(cell, g[ad]) for cell, g in tum_gruplar.items() if ad in g]
+        if not adaylar:
+            zorunlu_yok.append(ad)
+            continue
+        cell, g = max(adaylar, key=lambda x: x[1]["length"])
+        if any(p["cell"] == cell and p["road"] == ad for p in points):
+            zorunlu_zaten.append(f"{ad} ({cell})")
+            continue
+        lat, lon = middle_point(g["best_pts"])
+        k = sum(1 for p in points if p["cell"] == cell) + 1
+        nokta_ekle(cell, k, {
+            "road": ad, "highway": g["highway"],
+            "lat": round(lat, 6), "lon": round(lon, 6),
+            "length_m": int(round(min(g["length"], 500))),
+            "_rank": g["rank"], "_len": g["length"],
+        }, zorunlu=True)
+        zorunlu_eklenen.append(f"{ad} ({cell})")
+    if bos_hucre:   # zorunlu yol boş bir hücreye düştüyse artık boş değil
+        bos_hucre =[c for c in bos_hucre if not any(p["cell"] == c for p in points)]
 
     if args.max_points and len(points) > args.max_points:
         points.sort(key=lambda p: (p["_pick"], p["_rank"], -p["_len"]))
         cikarilan = len(points) - args.max_points
         points = points[:args.max_points]
         print(f"  [BİLGİ] Kota sınırı için {cikarilan} nokta çıkarıldı "
-              f"(ikinci/üçüncü seçimlerden, önemsiz yollar önce)")
-    points.sort(key=lambda p: (p["cell"], p["_pick"]))
+              f"(ikinci/üçüncü seçimlerden, önemsiz yollar önce; zorunlular korunur)")
+    points.sort(key=lambda p: (p["cell"], int(p["id"].rsplit("-", 1)[1])))
 
     temiz = [{k: v for k, v in p.items() if not k.startswith("_")} for p in points]
     Path(args.out + ".json").write_text(
         json.dumps(temiz, ensure_ascii=False, indent=2), encoding="utf-8")
-    cols = ["id", "cell", "geohash", "road", "highway", "lat", "lon", "length_m", "yedek"]
+    cols = ["id", "cell", "geohash", "road", "highway", "secim", "lat", "lon", "length_m", "yedek"]
     with open(args.out + ".csv", "w", encoding="utf-8-sig") as f:
         f.write(",".join(cols) + "\n")
         for p in temiz:
@@ -472,7 +543,12 @@ def main() -> None:
 
     # ── Özet ────────────────────────────────────────────────────────────────
     hucre_sayisi = len({p["cell"] for p in temiz})
-    ayni_g7 = len(temiz) - len({p["geohash"] for p in temiz})
+    hucre_nokta = {}
+    for p in temiz:
+        hucre_nokta[p["cell"]] = hucre_nokta.get(p["cell"], 0) + 1
+    nokta_dagilimi = {}
+    for n in hucre_nokta.values():
+        nokta_dagilimi[n] = nokta_dagilimi.get(n, 0) + 1
     sinif = {}
     for p in temiz:
         sinif[p["highway"]] = sinif.get(p["highway"], 0) + 1
@@ -489,8 +565,14 @@ def main() -> None:
         print(f"  Nokta bulunamayan   : {len(bos_hucre)} hücre → {', '.join(bos_hucre)}")
         print(f"     (deniz olabilir; sokak yedeği için --minor-fallback, "
               f"ya da JSON'a elle nokta ekleyin)")
-    if ayni_g7:
-        print(f"  [UYARI] {ayni_g7} nokta başka bir noktayla aynı 7 karakterli geohash'te")
+    print(f"  Hücre başına nokta  : " + ", ".join(
+        f"{n} nokta → {h} hücre" for n, h in sorted(nokta_dagilimi.items())))
+    print(f"  Zorunlu yol eklendi : {len(zorunlu_eklenen)} / {len(ZORUNLU_YOLLAR)}"
+          + (f" → {', '.join(zorunlu_eklenen)}" if zorunlu_eklenen else ""))
+    if zorunlu_zaten:
+        print(f"  Zaten seçiliydi     : {', '.join(zorunlu_zaten)}")
+    if zorunlu_yok:
+        print(f"  [UYARI] OSM'de bulunamayan zorunlu yol: {', '.join(zorunlu_yok)}")
     print(f"\n  Tahmini TomTom isteği:")
     for interval in (60, 10):
         print(f"    {interval:>2} dk aralıkla: {len(temiz) * (1440 // interval):>7,} istek/gün")

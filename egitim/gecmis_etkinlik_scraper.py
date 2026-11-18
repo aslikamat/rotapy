@@ -6,9 +6,16 @@ ve LSTM modeline beslenmeye hazır tek bir CSV üretir.
 
 Kaynaklar (yalnızca gerçekten GEÇMİŞ veri sağlayan kaynaklar kullanılıyor):
   1. Setlist.fm API    — Geçmiş konserler, kullanıcı katkılı arşiv (--sf-key ile, ÜCRETSİZ)
-  2. Mackolik           — arsiv.mackolik.com üzerinden geçmiş BJK ev sahibi maçları (otomatik)
-  3. Ticketmaster API  — opsiyonel (--tm-key), ancak bu bir "keşif/satış" API'si
-                          olduğundan geçmiş etkinlikler için genelde boş sonuç döner.
+  2. İBB Şehir Tiyatroları — 2017-2023 gösterim arşivi (CSV, --st-url ile veya
+                          SEHIR_TIYATROLARI_CSV_URL sabitine yazılarak)
+  3. Mackolik           — arsiv.mackolik.com üzerinden geçmiş BJK ev sahibi maçları (otomatik)
+
+  EKLEME MODU: Çıktı dosyası zaten varsa içindeki kayıtlar KORUNUR, yeni
+  çekilenler üstüne eklenir (aynı etkinlik iki kez yazılmaz). Sıfırdan
+  yazmak için --yenile kullanın.
+
+  NOT: Ticketmaster desteği kaldırıldı — Discovery API geçmiş etkinlikleri
+  arşivlemiyor, hiç veri dönmüyordu.
 
   NOT: Radar Türkiye desteği kod tabanından kaldırıldı. Radar sadece
   güncel/yaklaşan etkinlikleri listeliyor — geçmişe dönük bir arşivi yok,
@@ -20,6 +27,8 @@ Kurulum:
 Kullanım:
     python gecmis_etkinlik_scraper.py --sf-key KEY              # Setlist.fm + Mackolik
     python gecmis_etkinlik_scraper.py                            # sadece Mackolik
+    python gecmis_etkinlik_scraper.py --st-url URL_VEYA_DOSYA   # + Şehir Tiyatroları
+    python gecmis_etkinlik_scraper.py --yenile                  # mevcut dosyayı silip sıfırdan yaz
     python gecmis_etkinlik_scraper.py --demo                    # internet gerekmez
     python gecmis_etkinlik_scraper.py --start 2022-01-01        # tarih aralığı
                                       --end   2024-12-31         --sf-key KEY
@@ -97,22 +106,32 @@ def _date_hour(dt, fallback_date: str = "") -> str:
 
 
 VENUE_DB = {
-    "vodafone park":                  {"lat": 41.0390, "lon": 29.0100, "cap": 42684},
-    "tüpraş stadyumu":                {"lat": 41.0390, "lon": 29.0100, "cap": 42684},
-    "beşiktaş tüpraş stadyumu":       {"lat": 41.0390, "lon": 29.0100, "cap": 42684},
-    "zorlu psm":                      {"lat": 41.0681, "lon": 29.0116, "cap": 2350},
-    "zorlu performans sanatları":     {"lat": 41.0681, "lon": 29.0116, "cap": 2350},
-    "harbiye cemil topuzlu":          {"lat": 41.0487, "lon": 28.9887, "cap": 5000},
-    "ibb harbiye":                    {"lat": 41.0487, "lon": 28.9887, "cap": 5000},
-    "if performance hall beşiktaş":   {"lat": 41.0435, "lon": 29.0068, "cap": 800},
-    "if performance hall":            {"lat": 41.0435, "lon": 29.0068, "cap": 800},
+    "vodafone park":                  {"lat": 41.042041, "lon": 28.994508, "cap": 42684},   # koordinat kullanıcı tarafından doğrulandı
+    "tüpraş stadyumu":                {"lat": 41.042041, "lon": 28.994508, "cap": 42684},   # koordinat kullanıcı tarafından doğrulandı
+    "beşiktaş tüpraş stadyumu":       {"lat": 41.042041, "lon": 28.994508, "cap": 42684},   # koordinat kullanıcı tarafından doğrulandı
+    # Zorlu PSM — koordinat kullanıcı tarafından doğrulandı (Levazım, Beşiktaş).
+    # "zorlu center psm" anahtarı gerekli: Setlist.fm mekan adı "Zorlu Center PSM"
+    # ve venue_info'nun alt dizi eşleşmesi "zorlu psm" ile bunu yakalamıyordu
+    # (varsayılan Beşiktaş konumuna/500 kapasiteye düşüyordu).
+    "zorlu center psm":               {"lat": 41.066812, "lon": 29.016252, "cap": 2350},
+    "zorlu psm":                      {"lat": 41.066812, "lon": 29.016252, "cap": 2350},
+    "zorlu performans sanatları":     {"lat": 41.066812, "lon": 29.016252, "cap": 2350},
+    # Harbiye Cemil Topuzlu Açıkhava Tiyatrosu — koordinat İBB Şehir Tiyatroları
+    # CSV'sindeki resmi konum (Setlist.fm ve tiyatro kayıtları aynı noktada olsun)
+    "harbiye cemil topuzlu":          {"lat": 41.045777, "lon": 28.99044, "cap": 5000},
+    # Şehir Tiyatroları — Harbiye Muhsin Ertuğrul (Şişli, Beşiktaş sınırında).
+    # Koordinat CSV'den gelir; burası yalnızca CSV'de eksikse kullanılan yedek.
+    "muhsin ertuğrul":                {"lat": 41.0466, "lon": 28.9884, "cap": 500},
+    "ibb harbiye":                    {"lat": 41.045777, "lon": 28.99044, "cap": 5000},
+    "if performance hall beşiktaş":   {"lat": 41.044349, "lon": 29.006474, "cap": 800},   # koordinat kullanıcı tarafından doğrulandı
+    "if performance hall":            {"lat": 41.044349, "lon": 29.006474, "cap": 800},   # koordinat kullanıcı tarafından doğrulandı
     "sahne beşiktaş":                 {"lat": 41.0428, "lon": 29.0050, "cap": 500},
     "çarşı pub":                      {"lat": 41.0410, "lon": 29.0045, "cap": 300},
     "mentalist pub beşiktaş":         {"lat": 41.0415, "lon": 29.0048, "cap": 250},
-    "çırağan palace":                 {"lat": 41.0467, "lon": 29.0097, "cap": 700},
-    "swissotel":                      {"lat": 41.0487, "lon": 29.0009, "cap": 800},
-    "beşiktaş kültür merkezi":        {"lat": 41.0428, "lon": 29.0050, "cap": 800},
-    "bkm sahne":                      {"lat": 41.0428, "lon": 29.0050, "cap": 580},
+    "çırağan palace":                 {"lat": 41.045100, "lon": 29.016480, "cap": 700},   # koordinat kullanıcı tarafından doğrulandı
+    "swissotel":                      {"lat": 41.042487, "lon": 28.997628, "cap": 800},   # koordinat kullanıcı tarafından doğrulandı
+    "beşiktaş kültür merkezi":        {"lat": 41.043729, "lon": 29.005887, "cap": 800},   # aynı bina; koordinat kullanıcı tarafından doğrulandı
+    "bkm sahne":                      {"lat": 41.043729, "lon": 29.005887, "cap": 580},   # aynı bina; koordinat kullanıcı tarafından doğrulandı
     "default_besiktas":               {"lat": 41.0402, "lon": 29.0097, "cap": 500},
 }
 
@@ -121,6 +140,7 @@ BESIKTAS_KW = [
     "zorlu", "çırağan", "ciragan", "harbiye", "ortaköy",
     "balmumcu", "bebek", "akaretler", "if performance",
     "sahne beşiktaş", "çarşı pub", "mentalist",
+    "muhsin ertuğrul",
 ]
 
 def venue_info(name: str) -> dict:
@@ -150,94 +170,7 @@ def estimate_end(start_dt: datetime, category: str, venue: str) -> datetime:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. TICKETMASTER — geçmiş etkinlikler
-# ─────────────────────────────────────────────────────────────────────────────
-
-def fetch_ticketmaster_history(
-    api_key:    str,
-    start_date: str = "2020-01-01",
-    end_date:   str = "2024-12-31",
-) -> list[dict]:
-    print("\n[Ticketmaster] Geçmiş etkinlikler çekiliyor...")
-
-    base   = "https://app.ticketmaster.com/discovery/v2/events.json"
-    events = []
-    page   = 0
-
-    while True:
-        params = {
-            "apikey":          api_key,
-            "city":            "Istanbul",
-            "countryCode":     "TR",
-            "startDateTime":   f"{start_date}T00:00:00Z",
-            "endDateTime":     f"{end_date}T23:59:59Z",
-            "size":            200,
-            "page":            page,
-            "sort":            "date,asc",
-        }
-        try:
-            r = requests.get(base, params=params, timeout=15)
-            r.raise_for_status()
-            data  = r.json()
-            items = data.get("_embedded", {}).get("events", [])
-            if not items:
-                break
-
-            for ev in items:
-                venue_info_tm = ev.get("_embedded", {}).get("venues", [{}])[0]
-                venue_name    = venue_info_tm.get("name", "")
-                address       = venue_info_tm.get("address", {}).get("line1", "")
-
-                if not is_besiktas(venue_name, address):
-                    continue
-
-                start_info = ev.get("dates", {}).get("start", {})
-                date_str   = start_info.get("localDate", "")
-                time_str   = (start_info.get("localTime") or "")[:5]
-                clf        = ev.get("classifications", [{}])
-                category   = clf[0].get("genre", {}).get("name") or \
-                             clf[0].get("segment", {}).get("name") or "Etkinlik"
-
-                vi       = venue_info(venue_name)
-                start_dt = _to_datetime(date_str, time_str)
-                end_dt   = estimate_end(start_dt, category, venue_name) if start_dt else None
-
-                loc = venue_info_tm.get("location", {})
-                lat = float(loc.get("latitude",  vi["lat"]) or vi["lat"])
-                lon = float(loc.get("longitude", vi["lon"]) or vi["lon"])
-
-                events.append({
-                    "source":               "Ticketmaster",
-                    "name":                 ev.get("name", ""),
-                    "category":             category,
-                    "start_date_hour":      _date_hour(start_dt, date_str),
-                    "end_date_hour":        _date_hour(end_dt, ""),
-                    "start_datetime":       start_dt.isoformat() if start_dt else "",
-                    "end_datetime":         end_dt.isoformat()   if end_dt   else "",
-                    "venue":                venue_name,
-                    "lat":                  lat,
-                    "lon":                  lon,
-                    "geohash":              encode_geohash(lat, lon),
-                    "estimated_attendance": vi["cap"],
-                    "url":                  ev.get("url", ""),
-                })
-
-            total_pages = data.get("page", {}).get("totalPages", 1)
-            page += 1
-            if page >= total_pages:
-                break
-            time.sleep(0.3)
-
-        except Exception as e:
-            print(f"  [HATA] sayfa {page}: {e}")
-            break
-
-    print(f"  → {len(events)} Beşiktaş etkinliği")
-    return events
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. SETLIST.FM — geçmiş konserler (2015'e kadar)
+# 1. SETLIST.FM — geçmiş konserler (2015'e kadar)
 # Ücretsiz API key: setlist.fm/settings/api
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -245,6 +178,12 @@ SETLIST_VENUES = [
     "Vodafone Park", "Zorlu Center PSM",
     "IF Performance Hall", "Harbiye Cemil Topuzlu",
 ]
+
+# Setlist.fm'de aranan ad → çıktıda kullanılacak ad. Aynı mekan Şehir
+# Tiyatroları verisinde bu adla geçiyor; tek isimde birleştiriyoruz.
+SETLIST_MEKAN_ADI = {
+    "Harbiye Cemil Topuzlu": "Harbiye Cemil Topuzlu Açıkhava Tiyatrosu",
+}
 
 def fetch_setlistfm(
     api_key:    str,
@@ -330,7 +269,7 @@ def fetch_setlistfm(
                     "end_date_hour":        _date_hour(end_dt, ""),
                     "start_datetime":       start_dt.isoformat(),
                     "end_datetime":         end_dt.isoformat(),
-                    "venue":                venue_name,
+                    "venue":                SETLIST_MEKAN_ADI.get(venue_name, venue_name),
                     "lat":                  vi["lat"],
                     "lon":                  vi["lon"],
                     "geohash":              encode_geohash(vi["lat"], vi["lon"]),
@@ -348,8 +287,203 @@ def fetch_setlistfm(
 
         print(f"  → '{venue_name}' (setlist.fm'de: '{found_name}'): {venue_count} konser")
 
-    print(f"  → toplam {len(events)} konser")
-    return deduplicate(events)
+    print(f"  → toplam {len(events)} sanatçı kaydı")
+    konserler = _konserleri_birlestir(deduplicate(events))
+    print(f"  → {len(konserler)} konser (aynı mekan + aynı gece tek etkinlik)")
+    return konserler
+
+
+def _konserleri_birlestir(events: list[dict]) -> list[dict]:
+    """
+    Setlist.fm her sanatçıyı ayrı kaydettiği için ana grup ve ön gruplar aynı
+    gece ayrı konserler gibi görünüyor (ör. Arctic Monkeys + Inhaler). Aynı
+    mekan + aynı başlangıçtaki Setlist.fm kayıtlarını tek etkinlikte birleştirir:
+    sanatçı adları " + " ile birleşir, seyirci aynı kitle olduğu için
+    TOPLANMAZ (en büyüğü alınır). Diğer kaynaklara dokunmaz. Zaten birleşmiş
+    kayıtlarla tekrar çalıştırılabilir (idempotent).
+    """
+    out, gruplar = [], {}
+    for e in events:
+        if e.get("source") != "Setlist.fm":
+            out.append(e)
+            continue
+        key = (e["venue"], e["start_datetime"])
+        adlar = [a.strip() for a in re.sub(r"\s*Konseri$", "", e["name"]).split(" + ") if a.strip()]
+        if key not in gruplar:
+            g = dict(e)
+            g["_adlar"] = []
+            gruplar[key] = g
+            out.append(g)
+        g = gruplar[key]
+        for a in adlar:
+            if a not in g["_adlar"]:
+                g["_adlar"].append(a)
+        g["estimated_attendance"] = max(g["estimated_attendance"], e["estimated_attendance"])
+    for g in gruplar.values():
+        g["name"] = " + ".join(g.pop("_adlar")) + " Konseri"
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. İBB ŞEHİR TİYATROLARI — 2017-2023 gösterim arşivi (CSV)
+# Sütunlar: PLAY_DATE, PLAY_NAME, THEATER_NAME, PLAY_CATEGORY, IS_GUEST_PLAY,
+#           PLAY_TYPE, LONGITUDE, LATITUDE, NUMBER_OF_AUDIENCE
+# Her satır = tek bir gösterim.
+# ─────────────────────────────────────────────────────────────────────────────
+
+SEHIR_TIYATROLARI_CSV_URL = ""   
+
+# PLAY_DATE'te saat yoksa kullanılacak varsayılan başlangıç saatleri
+ST_VARSAYILAN_SAAT       = (20, 30)
+ST_COCUK_VARSAYILAN_SAAT = (14, 0)    # çocuk oyunları genelde gündüz
+
+# Trafik ve hava verisinin saat dilimi — etkinlik saatleri buna çevrilir
+YEREL_SAAT_DILIMI = "Europe/Istanbul"
+
+
+def _tr_lower(text: str) -> str:
+    """Türkçe uyumlu küçük harf: 'HARBİYE' → 'harbiye' (str.lower() 'i̇' üretir)."""
+    return str(text).replace("İ", "i").replace("I", "ı").lower()
+
+
+def _to_float(val) -> float | None:
+    """'41,0466' / '41.0466' / NaN → float veya None."""
+    try:
+        f = float(str(val).replace(",", "."))
+        return None if pd.isna(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_csv_esnek(src: str) -> pd.DataFrame:
+    """İBB CSV'leri için ayraç (; veya ,) ve kodlama (utf-8 / cp1254) otomatik."""
+    son_hata = None
+    for enc in ("utf-8-sig", "cp1254", "latin-1"):
+        try:
+            return pd.read_csv(src, sep=None, engine="python", encoding=enc)
+        except UnicodeDecodeError as e:
+            son_hata = e
+    raise son_hata
+
+
+def fetch_sehir_tiyatrolari(
+    src:        str,
+    start_date: str = "2020-01-01",
+    end_date:   str = "2024-12-31",
+) -> list[dict]:
+    """
+    İBB Şehir Tiyatroları gösterim CSV'sinden Beşiktaş ve çevresindeki
+    (BESIKTAS_KW — örn. Harbiye Muhsin Ertuğrul) sahnelerin gösterimlerini çeker.
+    src: URL veya yerel dosya yolu.
+    """
+    print("\n[Şehir Tiyatroları] Gösterim arşivi okunuyor...")
+    try:
+        raw = _read_csv_esnek(src)
+    except Exception as e:
+        print(f"  [HATA] CSV okunamadı: {e}")
+        return []
+
+    raw.columns = [str(c).strip().upper() for c in raw.columns]
+    gerekli = {"PLAY_DATE", "PLAY_NAME", "THEATER_NAME"}
+    eksik   = gerekli - set(raw.columns)
+    if eksik:
+        print(f"  [HATA] Beklenen sütunlar yok: {sorted(eksik)} — mevcut: {list(raw.columns)}")
+        return []
+    print(f"  {len(raw):,} gösterim, {raw['THEATER_NAME'].nunique()} sahne")
+
+    # Sahne filtresi — Türkçe büyük harf (İ) sorununa karşı _tr_lower ile
+    raw["_sahne_lc"] = raw["THEATER_NAME"].map(_tr_lower)
+    raw = raw[raw["_sahne_lc"].map(lambda n: any(kw in n for kw in BESIKTAS_KW))]
+    print(f"  Beşiktaş/çevre sahneleri: {raw['THEATER_NAME'].unique().tolist()}")
+
+    events = []
+    for _, row in raw.iterrows():
+        dt = pd.to_datetime(row["PLAY_DATE"], errors="coerce")
+        if pd.isna(dt):
+            dt = pd.to_datetime(row["PLAY_DATE"], errors="coerce", dayfirst=True)
+        if pd.isna(dt):
+            continue
+
+        # PLAY_DATE saat dilimi bilgisiyle (UTC, "+00:00"/"Z") geliyor; trafik ve
+        # hava verisi Türkiye saatinde olduğu için Europe/Istanbul'a çevirip
+        # saat dilimi bilgisini atıyoruz (ör. 17:30 UTC → 20:30). Saat dilimi
+        # bilgisi olmayan değerlere dokunulmaz.
+        saat_dilimli = dt.tzinfo is not None
+        if saat_dilimli:
+            dt = dt.tz_convert(YEREL_SAAT_DILIMI).tz_localize(None)
+        dt = dt.to_pydatetime()
+
+        iso = dt.strftime("%Y-%m-%d")
+        if not (start_date <= iso <= end_date):
+            continue
+
+        # Saat bilgisi yoksa (00:00) oyun tipine göre varsayılan saat.
+        # Saat dilimli değerlerde saat her zaman vardır, gece yarısı da olsa
+        # varsayılan saate çevrilmez.
+        if not saat_dilimli and dt.hour == 0 and dt.minute == 0:
+            tip = _tr_lower(f"{row.get('PLAY_TYPE', '')} {row.get('PLAY_CATEGORY', '')}")
+            h, m = ST_COCUK_VARSAYILAN_SAAT if "çocuk" in tip else ST_VARSAYILAN_SAAT
+            dt = dt.replace(hour=h, minute=m)
+
+        venue    = str(row["THEATER_NAME"]).strip()
+        vi       = venue_info(row["_sahne_lc"])
+        lat      = _to_float(row.get("LATITUDE"))  or vi["lat"]
+        lon      = _to_float(row.get("LONGITUDE")) or vi["lon"]
+        seyirci  = _to_float(row.get("NUMBER_OF_AUDIENCE"))
+        end_dt   = estimate_end(dt, "tiyatro", venue)
+
+        events.append({
+            "source":               "Şehir Tiyatroları",
+            "name":                 str(row["PLAY_NAME"]).strip(),
+            "category":             "Tiyatro",
+            "start_date_hour":      _date_hour(dt, iso),
+            "end_date_hour":        _date_hour(end_dt, ""),
+            "start_datetime":       dt.isoformat(),
+            "end_datetime":         end_dt.isoformat(),
+            "venue":                venue,
+            "lat":                  lat,
+            "lon":                  lon,
+            "geohash":              encode_geohash(lat, lon),
+            "estimated_attendance": int(seyirci) if seyirci else vi["cap"],
+            "url":                  "",
+        })
+
+    print(f"  → {len(events)} gösterim satırı ({start_date} → {end_date})")
+    seanslar = _seanslari_birlestir(events)
+    print(f"  → {len(seanslar)} seans (aynı sahne + aynı saat tek etkinlik)")
+    return seanslar
+
+
+def _seanslari_birlestir(events: list[dict]) -> list[dict]:
+    """
+    Aynı sahnede aynı başlangıç saatindeki kayıtları tek etkinlikte birleştirir.
+    Ham CSV'de aynı seans bazen iki satır (ör. seyirci 40 + 590 olarak bölünmüş)
+    ya da aynı saatte iki farklı oyun olarak geçiyor; trafik açısından o saatte
+    binaya gelen kişi sayısı önemli olduğu için seyirci sayıları TOPLANIR,
+    oyun adları " + " ile birleştirilir.
+    Aynı oyunun aynı gün farklı saatlerdeki gösterimleri (15:00 ve 20:30)
+    ayrı etkinlik olarak kalır.
+    """
+    gruplar: dict[tuple, dict] = {}
+    for e in events:
+        key = (e["venue"], e["start_datetime"])
+        if key not in gruplar:
+            gruplar[key] = dict(e)
+            gruplar[key]["_adlar"] = [e["name"]]
+            continue
+        g = gruplar[key]
+        if e["name"] not in g["_adlar"]:
+            g["_adlar"].append(e["name"])
+        g["estimated_attendance"] += e["estimated_attendance"]
+        if e["end_datetime"] > g["end_datetime"]:
+            g["end_datetime"]  = e["end_datetime"]
+            g["end_date_hour"] = e["end_date_hour"]
+
+    out = []
+    for g in gruplar.values():
+        g["name"] = " + ".join(g.pop("_adlar"))
+        out.append(g)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,6 +497,81 @@ MACKOLIK_TEAM_SLUG = "Besiktas"   # maç linklerindeki takım kısaltması (örn
 # Bu başlıkların altındaki maçlar dahil EDİLMEZ — hazırlık/dostluk maçları
 # çoğunlukla yurt dışı kamplarda / nötr sahalarda oynanıyor, Vodafone Park'ta değil.
 MACKOLIK_EXCLUDE_SECTIONS = ["hazırlık", "kulüpler", "hazirlik"]
+
+# Maç detay sayfasındaki stadyum adı bunlardan birini içermiyorsa maç ALINMAZ
+# (Süper Kupa / kupa finali gibi nötr saha, yurt dışı kamp, UEFA kararıyla
+# başka ülkede oynanan maçlar vb.). Stadyumun adı 2023'te Vodafone Park'tan
+# Tüpraş Stadyumu'na değişti; UEFA maçlarında "Beşiktaş Park" geçebiliyor.
+MACKOLIK_STADYUM_ADLARI = ["vodafone park", "vodafone arena", "tüpraş stadyumu", "beşiktaş park"]
+
+# Pandemi nedeniyle seyircisiz oynanan dönem (Mart 2020 — 2020/21 sezonu sonu).
+# Maç sayfasında seyirci yoksa ve maç bu aralıktaysa seyirci 0 kabul edilir.
+SEYIRCISIZ_DONEM = ("2020-03-12", "2021-07-31")
+
+MACKOLIK_DETAY_BEKLEME_SN = 1.2   # maç detay sayfaları arası bekleme (siteyi yormamak için)
+
+# Son scrape_bjk_fixtures çalışmasında sezon sayfası alınamayan sezonlar
+# (başlangıç yılı). main() bu sezonların eski kayıtlarını SİLMEZ.
+MACKOLIK_HATALI_SEZONLAR: list[int] = []
+
+
+def _mackolik_mac_detay(session, url: str, deneme: int = 3) -> dict | None:
+    """
+    Mackolik maç detay sayfasından turnuva, tarih/saat, durum, stadyum ve
+    seyirci bilgisini okur. Sayfa alınamazsa None döner.
+    Sayfa metni "Tarih : 18.08.2024 21:45 | Beşiktaş | ... | Son 5 Maç : |
+    Seyirci : 32.966 kişi | MS | 4 - 2 | Antalyaspor | ... | Son 5 Maç : |
+    Tüpraş Stadyumu | ..." biçiminde.
+    """
+    import html as _html
+    t = None
+    for i in range(deneme):
+        try:
+            r = session.get(url, timeout=20)
+            r.raise_for_status()
+            t = r.text
+            break
+        except Exception:
+            time.sleep(3 * (i + 1))
+    if t is None:
+        return None
+
+    title_m = re.search(r"<title>(.*?)</title>", t, re.S)
+    title   = _html.unescape(title_m.group(1)).strip() if title_m else ""
+    turnuva = re.sub(r"^.*?Maç Detayı - ", "", title).replace(" @ Mackolik.com", "").strip()
+
+    txt = re.sub(r"<script.*?</script>|<style.*?</style>", "", t, flags=re.S)
+    txt = _html.unescape(re.sub(r"<[^>]+>", " | ", txt))
+    txt = re.sub(r"(\s*\|\s*)+", " | ", txt)
+    i   = txt.find("Tarih :")
+    blk = txt[i:i + 500] if i >= 0 else ""
+
+    tarih_m = re.search(r"Tarih : (\d{1,2})\.(\d{1,2})\.(\d{4}) (\d{1,2}):(\d{2})", blk)
+    tarih   = None
+    if tarih_m:
+        g, a, y, sa, dk = (int(x) for x in tarih_m.groups())
+        try:
+            tarih = datetime(y, a, g, sa, dk)
+        except ValueError:
+            tarih = None
+
+    parcalar = blk.split("Son 5 Maç : |")
+    stad = ""
+    if len(parcalar) > 2:
+        aday = parcalar[2].split("|")[0].strip()
+        # Stadyum yoksa bu alanda "Takım Değeri :" / "Takım Karşılaştırma" gibi
+        # başka bir alan oluyor — stadyum sayma
+        if aday and not aday.startswith("Takım"):
+            stad = aday
+
+    # MS = normal süre, UZ = uzatma, Pen = penaltılar → oynandı.
+    # "Hük." (hükmen) / "Ert." (ertelendi) → oynanmadı.
+    oynandi = bool(re.search(r"\| (MS|UZ|Pen) \| \d+ - \d+ \|", blk))
+    sey_m   = re.search(r"Seyirci : ([\d\.]+) kişi", blk)
+    seyirci = int(sey_m.group(1).replace(".", "")) if sey_m else None
+
+    return {"turnuva": turnuva, "tarih": tarih, "stad": stad,
+            "oynandi": oynandi, "seyirci": seyirci}
 
 
 def _mackolik_is_home_slug(slug: str) -> bool | None:
@@ -404,16 +613,27 @@ def scrape_bjk_fixtures(
     })
 
     events = []
+    MACKOLIK_HATALI_SEZONLAR.clear()
     vi = venue_info("vodafone park")
-    date_re = re.compile(r'\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b')
+    gorulen_maclar  = set()   # aynı maç linki sayfada birden fazla geçebilir
+    elenen          = []      # (maç, tarih, neden) — sonda raporlanır
+    seyirci_kaynagi = {}      # sayfa / seyircisiz dönem / tahmin sayıları
     mac_href_re = re.compile(r'/Mac/(\d+)/([A-Za-z0-9İıŞşĞğÜüÖöÇç-]+)')
 
     for season in range(start_year, end_year + 1):
         url = f"{MACKOLIK_BASE}/Takim/{MACKOLIK_TEAM_ID}/{MACKOLIK_TEAM_SLUG}/{season}/{season+1}"
         season_count = 0
         try:
-            r = session.get(url, timeout=15)
-            r.raise_for_status()
+            # Sezon sayfası — Mackolik ara sıra bağlantıyı kesiyor, birkaç kez dene
+            for deneme in range(1, 4):
+                try:
+                    r = session.get(url, timeout=15)
+                    r.raise_for_status()
+                    break
+                except Exception:
+                    if deneme == 3:
+                        raise
+                    time.sleep(15 * deneme)
             soup = BeautifulSoup(r.text, "html.parser")
 
             # Maç listesinin olduğu ana konteyner — "Maçlar" sekmesi
@@ -451,41 +671,48 @@ def scrape_bjk_fixtures(
                 if not is_home:
                     continue  # deplasman maçı ya da belirsiz — atla
 
-                # Tarihi bulmak için en yakın "satır" atasını arıyoruz — ata
-                # zincirinde tarih deseni (DD.MM.YYYY) içeren ilk elemanı kullan.
-                row_text = ""
-                node = el
-                for _ in range(4):  # en fazla 4 seviye yukarı çık
-                    node = node.parent
-                    if node is None:
-                        break
-                    row_text = node.get_text(" ", strip=True)
-                    if date_re.search(row_text):
-                        break
-                date_m = date_re.search(row_text)
-                if not date_m:
+                match_id = m.group(1)
+                if match_id in gorulen_maclar:
                     continue
-
-                day, mon, year = (int(x) for x in date_m.groups())
-                try:
-                    dt = datetime(year, mon, day)
-                except ValueError:
-                    continue
-                iso = dt.strftime("%Y-%m-%d")
-
-                # Saat verisi bu sayfada genelde yok — sezon boyu tipik akşam
-                # maç saati olan 19:00'ı varsayılan olarak kullanıyoruz.
-                time_m = re.search(r'\b(\d{1,2}):(\d{2})\b', row_text)
-                time_str = f"{int(time_m.group(1)):02d}:{time_m.group(2)}" if time_m else "19:00"
-
-                start_dt = _to_datetime(iso, time_str) or datetime(year, mon, day, 19, 0)
-                end_dt   = start_dt + timedelta(hours=2.5)
+                gorulen_maclar.add(match_id)
+                mac_url = f"{MACKOLIK_BASE}/Mac/{match_id}/{m.group(2)}"
 
                 # Rakip ismi — slug'ın "Besiktas-" kısmından sonrasını okunabilir hale getir
                 opponent = m.group(2)[len(MACKOLIK_TEAM_SLUG) + 1:].replace("-", " ")
                 name = f"Beşiktaş - {opponent} Maçı".strip() if opponent else "Beşiktaş Maçı"
 
-                match_id = m.group(1)
+                # Maç detay sayfası: gerçekten stadyumda oynandı mı, saat, seyirci
+                time.sleep(MACKOLIK_DETAY_BEKLEME_SN)
+                detay = _mackolik_mac_detay(session, mac_url)
+                if detay is None:
+                    elenen.append((name, "?", "detay sayfası alınamadı"))
+                    continue
+                tarih_txt = detay["tarih"].strftime("%Y-%m-%d") if detay["tarih"] else "?"
+                if "hazırlık" in _tr_lower(detay["turnuva"]):
+                    elenen.append((name, tarih_txt, f"hazırlık maçı ({detay['turnuva']})"))
+                    continue
+                if not detay["oynandi"]:
+                    elenen.append((name, tarih_txt, "oynanmadı (hükmen/ertelendi)"))
+                    continue
+                if not any(k in _tr_lower(detay["stad"]) for k in MACKOLIK_STADYUM_ADLARI):
+                    elenen.append((name, tarih_txt, f"stadyum: {detay['stad'] or 'bilinmiyor'}"))
+                    continue
+                if detay["tarih"] is None:
+                    elenen.append((name, "?", "tarih okunamadı"))
+                    continue
+
+                start_dt = detay["tarih"]
+                end_dt   = start_dt + timedelta(hours=2.5)
+                iso      = start_dt.strftime("%Y-%m-%d")
+
+                if detay["seyirci"] is not None:
+                    seyirci, kaynak = detay["seyirci"], "sayfa"
+                elif SEYIRCISIZ_DONEM[0] <= iso <= SEYIRCISIZ_DONEM[1]:
+                    seyirci, kaynak = 0, "seyircisiz dönem"
+                else:
+                    seyirci, kaynak = None, "tahmin"   # döngü sonunda doldurulur
+                seyirci_kaynagi[kaynak] = seyirci_kaynagi.get(kaynak, 0) + 1
+
                 events.append({
                     "source":               "Mackolik",
                     "name":                 name,
@@ -498,8 +725,8 @@ def scrape_bjk_fixtures(
                     "lat":                  vi["lat"],
                     "lon":                  vi["lon"],
                     "geohash":              encode_geohash(vi["lat"], vi["lon"]),
-                    "estimated_attendance": vi["cap"],
-                    "url":                  f"{MACKOLIK_BASE}/Mac/{match_id}/{m.group(2)}",
+                    "estimated_attendance": seyirci,
+                    "url":                  mac_url,
                 })
                 season_count += 1
 
@@ -507,7 +734,23 @@ def scrape_bjk_fixtures(
             time.sleep(1)
 
         except Exception as e:
-            print(f"  → {season}-{season+1}: [HATA] {e}")
+            MACKOLIK_HATALI_SEZONLAR.append(season)
+            print(f"  → {season}-{season+1}: [HATA] {e} — bu sezonun eski kayıtları korunacak")
+
+    # Sayfada seyirci olmayan (seyircisiz dönem dışı) maçlar: bu çalışmada
+    # bulunan gerçek seyirci sayılarının medyanı, hiç yoksa stadyum kapasitesi
+    gercek = [e["estimated_attendance"] for e in events
+              if e["estimated_attendance"] not in (None, 0)]
+    tahmin = int(pd.Series(gercek).median()) if gercek else vi["cap"]
+    for e in events:
+        if e["estimated_attendance"] is None:
+            e["estimated_attendance"] = tahmin
+
+    print(f"  Seyirci kaynağı: {seyirci_kaynagi} (tahmin = {tahmin:,})")
+    if elenen:
+        print(f"  Elenen {len(elenen)} maç:")
+        for ad, tarih, neden in elenen:
+            print(f"    - {tarih}  {ad}: {neden}")
 
     return deduplicate(events)
 
@@ -621,12 +864,17 @@ def _guess_category(name: str, url: str = "") -> str:
     return "Etkinlik"
 
 def deduplicate(events: list) -> list:
-    """Aynı gün + aynı mekan + benzer isim → tek kayıt."""
+    """
+    Aynı başlangıç saati + aynı mekan + benzer isim → tek kayıt.
+    Eskiden yalnızca GÜNE bakılıyordu; bu, aynı oyunun aynı gün 15:00 ve
+    20:30'daki iki gösteriminden ikincisini siliyordu.
+    """
     seen = set()
     out  = []
     for e in events:
-        # start_date_hour veya event_date — her iki formata uyumlu
-        tarih = e.get("start_date_hour", e.get("event_date", ""))[:10]
+        # start_datetime (dakikaya kadar) → yoksa start_date_hour → yoksa event_date
+        tarih = (e.get("start_datetime") or e.get("start_date_hour")
+                 or e.get("event_date") or "")[:16]
         key   = (tarih, e.get("venue", "")[:20].lower(),
                  e.get("name", "")[:15].lower())
         if key not in seen:
@@ -645,13 +893,17 @@ def main():
     )
     parser.add_argument("--start",  default="2020-01-01", help="Başlangıç tarihi")
     parser.add_argument("--end",    default="2024-12-31", help="Bitiş tarihi")
-    parser.add_argument("--tm-key", default="",  help="Ticketmaster API key")
     parser.add_argument("--sf-key", default="",  help="Setlist.fm API key")
+    parser.add_argument("--st-url", default=SEHIR_TIYATROLARI_CSV_URL,
+                        help="Şehir Tiyatroları CSV URL'si veya yerel dosya yolu")
     parser.add_argument("--demo",   action="store_true", help="Demo modu")
     parser.add_argument("--out",    default="besiktas_gecmis_etkinlikler.parquet")
+    parser.add_argument("--yenile", action="store_true",
+                        help="Mevcut çıktıyı KORUMA, sıfırdan yaz (varsayılan: üstüne ekle)")
     args = parser.parse_args()
 
     all_events = []
+    yenilenen_kaynaklar: set[str] = set()   # eski kayıtları yenileriyle değiştirilecek kaynaklar
 
     if args.demo:
         print("[DEMO] Örnek geçmiş etkinlik verisi üretiliyor...")
@@ -663,35 +915,67 @@ def main():
         # (fonksiyon kod tabanında duruyor, isterseniz ileride GÜNCEL/gelecek
         # etkinlik toplama işi için ayrı bir script'te kullanılabilir.)
 
-        # 1. Ticketmaster (key varsa) — UYARI: Discovery API bir "keşif/satış"
-        #    sistemidir, geçmişte tamamlanmış etkinlikleri arşivlemez. Bu
-        #    yüzden geçmiş tarih aralıkları için genellikle boş sonuç döner.
-        #    Yine de --tm-key verilirse denenir (zararı yok).
-        if args.tm_key:
-            all_events += fetch_ticketmaster_history(
-                args.tm_key, args.start, args.end
-            )
-        else:
-            print("\n[Ticketmaster] --tm-key verilmedi, atlandı.")
-
-        # 2. Setlist.fm (key varsa) — asıl geçmiş konser kaynağımız
+        # 1. Setlist.fm (key varsa) — asıl geçmiş konser kaynağımız
         if args.sf_key:
             all_events += fetch_setlistfm(args.sf_key, args.start, args.end)
         else:
             print("[Setlist.fm] --sf-key verilmedi, atlandı.")
 
+        # 2. Şehir Tiyatroları (URL/dosya varsa)
+        if args.st_url:
+            st_events = fetch_sehir_tiyatrolari(args.st_url, args.start, args.end)
+            all_events += st_events
+            if st_events:   # CSV okunamadıysa eski tiyatro kayıtları korunur
+                yenilenen_kaynaklar.add("Şehir Tiyatroları")
+        else:
+            print("[Şehir Tiyatroları] --st-url / SEHIR_TIYATROLARI_CSV_URL boş, atlandı.")
+
         # 3. Mackolik — BJK ev sahibi maçları (her zaman, arsiv.mackolik.com)
         start_year = int(args.start[:4])
         end_year   = int(args.end[:4])
         all_events += scrape_bjk_fixtures(start_year, end_year)
+        yenilenen_kaynaklar.add("Mackolik")
 
         # Mackolik sezon bazlı çalışıyor (örn. 2024/2025 sezonu Ağustos 2024 -
         # Mayıs 2025 arası sürer), bu yüzden istenen --start/--end aralığının
         # dışına taşan maçları burada kırpıyoruz.
         all_events = _filter_by_date(all_events, args.start, args.end)
 
+    yeni_cekilen = len(all_events)
+
+    # EKLEME MODU — mevcut kayıtlar önce gelir, deduplicate ilk görüleni
+    # tuttuğu için aynı etkinlik tekrar çekilse de ESKİ kayıt korunur.
+    mevcut = []
+    if Path(args.out).exists() and not args.yenile:
+        mevcut_df = pd.read_parquet(args.out)
+        # Bu çalışmada yeniden çekilen kaynakların (Mackolik, Şehir Tiyatroları)
+        # istenen aralıktaki eski kayıtları atılır — yoksa eski kayıtlar
+        # (yanlış stadyum, sabit saat, silinmiş seanslar vb.) yenilerin
+        # yerine korunurdu.
+        if "source" in mevcut_df.columns:
+            for kaynak in sorted(yenilenen_kaynaklar):
+                tarih = mevcut_df["start_date_hour"].astype(str).str[:10]
+                eski = ((mevcut_df["source"] == kaynak)
+                        & (tarih >= args.start) & (tarih <= args.end))
+                if kaynak == "Mackolik":
+                    # Sezon sayfası alınamayan sezonların (Temmuz–Haziran) eski
+                    # kayıtları korunur, yoksa o sezonun maçları kaybolurdu
+                    for sezon in MACKOLIK_HATALI_SEZONLAR:
+                        eski &= ~((tarih >= f"{sezon}-07-01") & (tarih <= f"{sezon + 1}-06-30"))
+                if eski.any():
+                    print(f"\n[Ekleme modu] {int(eski.sum())} eski {kaynak} kaydı yenileriyle değiştirilecek")
+                mevcut_df = mevcut_df[~eski]
+        mevcut    = mevcut_df.where(mevcut_df.notna(), None).to_dict("records")
+        print(f"\n[Ekleme modu] {args.out} içinde {len(mevcut)} kayıt korunuyor")
+    elif args.yenile:
+        print(f"\n[--yenile] Mevcut {args.out} yok sayılıyor, sıfırdan yazılacak")
+
     # Yineleme temizle + tarihe göre sırala
-    all_events = deduplicate(all_events)
+    birlesik   = mevcut + all_events
+    all_events = _konserleri_birlestir(deduplicate(birlesik))
+    eklenen    = len(all_events) - len(mevcut)
+    print(f"  Yeni çekilen: {yeni_cekilen} | eklenen: {eklenen} | "
+          f"zaten vardı/yineleme: {len(birlesik) - len(all_events)}")
     all_events.sort(key=lambda e: e.get("start_datetime") or e.get("start_date_hour") or e.get("event_date") or "")
 
     df = pd.DataFrame(all_events)
@@ -703,15 +987,17 @@ def main():
 
     # Kalite raporu
     kalite = {
-        "kaynak":               "Setlist.fm + Mackolik (+ opsiyonel Ticketmaster)",
+        "kaynak":               "Setlist.fm + Şehir Tiyatroları + Mackolik",
         "toplam_etkinlik":      int(len(df)),
         "kaynak_dagilimi":      {k: int(v) for k, v in df["source"].value_counts().items()} if not df.empty else {},
         "kategori_dagilimi":    {k: int(v) for k, v in df["category"].value_counts().items()} if not df.empty else {},
-        "yineleme_silinen":     int(len(all_events) - len(df)),
+        "onceki_kayit":         len(mevcut),
+        "bu_calismada_eklenen": int(eklenen),
+        "yineleme_silinen":     int(len(birlesik) - len(all_events)),
         "koordinatsiz_silinen": int(df[["lat","lon"]].isna().any(axis=1).sum()) if not df.empty else 0,
         "tarih_araligi":        {
-            "baslangic": args.start,
-            "bitis":     args.end,
+            "baslangic": str(df["start_date_hour"].min())[:10] if not df.empty else args.start,
+            "bitis":     str(df["start_date_hour"].max())[:10] if not df.empty else args.end,
         },
     }
     with open("etkinlik_kalite.json", "w", encoding="utf-8") as f:
