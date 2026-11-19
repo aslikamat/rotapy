@@ -8,3 +8,5 @@ sistem/tomtom_data/
 *.keras
 *.pkl
 egitim/besiktas_lstm_model/
+*kalite*.json
+.vscode/
