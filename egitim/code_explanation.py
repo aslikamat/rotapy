@@ -42,7 +42,6 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from sklearn.preprocessing import MinMaxScaler
 
 # Keras'ın LSTM'i aslında iki sınıftan oluşur:
 #   LSTMCell → TEK bir zaman adımının hesabını yapan hücre (kapılar burada)
@@ -62,7 +61,6 @@ from lstm_egitim import (
     TARGET_COL,         # "congestion_ratio"
     GROUP_COL,          # "geohash"
     SEQUENCE_LEN,       # 6
-    TRAIN_RATIO,        # 0.70
 )
 
 np.set_printoptions(precision=4, suppress=True, linewidth=100)
@@ -145,12 +143,16 @@ print(f"Sahte veri tablosu: {df.shape[0]} satır (saat), "
       f"{len(FEATURE_COLS)} özellik + datetime + geohash + {TARGET_COL}")
 
 # >>> BİZİM KODUMUZ ÇALIŞIYOR: lstm_egitim.py → create_sequences()
-# İçindeki döngü (lstm_egitim.py, satır ~157-159):
+# İçindeki döngü (lstm_egitim.py, satır ~167-175):
 #     for i in range(SEQUENCE_LEN, len(loc_df)):
+#         if times[i] - times[i - SEQUENCE_LEN] != 6 saat: atla   # boşluklu pencere
 #         X_all.append(features[i - SEQUENCE_LEN:i])   # i'den önceki 6 saat
 #         y_all.append(targets[i])                     # i. saatin hedefi
-# i = 6, 7, ..., 149 → 150 - 6 = 144 pencere
-X, y = create_sequences(df, MinMaxScaler(), MinMaxScaler(), fit_scalers=True)
+#         t_all.append(times[i])                       # hedef saat (bölme için)
+# i = 6, 7, ..., 149 → 150 - 6 = 144 pencere (sahte veride saat boşluğu yok)
+# create_sequences ölçekleme YAPMAZ; gerçek eğitimde ölçekleyiciler bölmeden sonra
+# sadece train kümesine uydurulur (scale_sets). Sahte veri zaten 0-1 arası.
+X, y, t = create_sequences(df)
 
 print(f"\nSonuç: X.shape = {X.shape}  → (pencere sayısı, saat, özellik)")
 print(f"       y.shape = {y.shape}   → her pencere için 1 hedef değer")
@@ -452,9 +454,13 @@ standart sapmayla normalize eder; eğitimi daha kararlı hale getirir.""")
 # =============================================================================
 baslik("BÖLÜM 9 — batch_size=32: model.fit pencereleri nasıl gruplandırıyor?")
 
-n_train = int(len(X) * TRAIN_RATIO)
+# Gerçek eğitim (split_data) TARİHE göre böler: train < 2023-07-01 ≤ val < 2024-04-01 ≤ test.
+# Buradaki sahte 150 saat tek bir tarih aralığında olduğu için o sınırlar burada üç
+# küme oluşturmaz; batch mantığını göstermek için ilk %70'i train kabul ediyoruz.
+DEMO_TRAIN_ORAN = 0.70
+n_train = int(len(X) * DEMO_TRAIN_ORAN)
 X_train, y_train = X[:n_train], y[:n_train]
-print(f"Bizim split_data() mantığıyla train örnek sayısı: int({len(X)} × {TRAIN_RATIO}) = {n_train}")
+print(f"Örnek train kümesi (sahte veri, ilk %70): int({len(X)} × {DEMO_TRAIN_ORAN}) = {n_train}")
 print(f"Beklenen batch sayısı: {n_train} / 32 → yukarı yuvarla = {int(np.ceil(n_train / 32))}")
 print(f"Batch boyutları: {[min(32, n_train - s) for s in range(0, n_train, 32)]}")
 
