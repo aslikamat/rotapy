@@ -16,8 +16,8 @@ ve alternatif güzergah öneren yapay zeka tabanlı sistem.
 ```
 besiktas-rota/
 ├── egitim/                         # Model eğitimi
-│   ├── gecmis_trafik_ibb.py        # İBB 2020-2025(Ocak) saatlik trafik verisi
-│   ├── gecmis_etkinlik_scraper.py  # Setlist.fm + Ticketmaster + Mackolik
+│   ├── gecmis_trafik_ibb_speed.py  # İBB 2020-2025(Ocak) saatlik trafik verisi
+│   ├── gecmis_etkinlik_scraper.py  # Setlist.fm + Şehir Tiyatroları + Mackolik
 │   ├── gecmis_hava_durumu.py       # Open-Meteo geçmiş hava verisi
 │   ├── birlestirme.py              # Veri kaynaklarını birleştir
 │   └── lstm_egitim.py              # LSTM modeli eğit
@@ -47,7 +47,7 @@ playwright install chromium
 cd egitim
 
 # İBB trafik verisi (2023-2024)
-python gecmis_trafik_ibb.py --quick
+python gecmis_trafik_ibb_speed.py --quick
 
 # Etkinlik verisi
 python gecmis_etkinlik_scraper.py --start 2023-01-01 --end 2024-12-31
@@ -150,7 +150,12 @@ yarıçap (km) = 0.5 × √(kapasite / 500) (?)
 ----
 
 ## Beşiktaş bölgesi için geohashler : 
-['sxk9s3', 'sxk9s5', 'sxk9s6', 'sxk9s2', 'sxk9s8', 'sxk9s0', 'sxk9kk', 'sxk9se', 'sxk9sk', 'sxk9kt', 'sxk9kr', 'sxk9e9', 'sxk9s9', 'sxk9sh', 'sxk97s', 'sxk9s4', 'sxk9ec', 'sxk9ks', 'sxk9ef', 'sxk9kx', 'sxk9eb', 'sxk9km', 'sxk9ed', 'sxk9s7', 'sxk9eu', 'sxk9kp', 'sxk97t', 'sxk9s1', 'sxk97y', 'sxk9sd', 'sxk97w', 'sxk9ee', 'sxk9es', 'sxk9ss', 'sxk97z', 'sxk9kh', 'sxk9e8', 'sxk9kw', 'sxk97x', 'sxk9eg', 'sxk9kq', 'sxk9kj', 'sxk9kn', 'sxk97v', 'sxk97u']
+Eğitim verisinde kullanılan 33 hücre (6 karakterli geohash, ~600 m × 900 m):
+['sxk97s', 'sxk97t', 'sxk97w', 'sxk97x', 'sxk97y', 'sxk97z', 'sxk9e8', 'sxk9e9', 'sxk9eb', 'sxk9ec', 'sxk9ed', 'sxk9ee', 'sxk9ef', 'sxk9eg', 'sxk9es', 'sxk9eu', 'sxk9kp', 'sxk9kr', 'sxk9s0', 'sxk9s1', 'sxk9s2', 'sxk9s3', 'sxk9s4', 'sxk9s5', 'sxk9s6', 'sxk9s7', 'sxk9s8', 'sxk9s9', 'sxk9sd', 'sxk9se', 'sxk9sh', 'sxk9sk', 'sxk9ss']
+
+Beşiktaş kutusundaki İBB verisinde toplam 45 hücre var; eğitimde kullanılmayan 12 hücre:
+- Asya yakası / Boğaz (10): sxk9kh, sxk9kj, sxk9kk, sxk9km, sxk9kn, sxk9kq, sxk9ks, sxk9kt, sxk9kw, sxk9kx
+- Denizdeki seyrek hücreler (2): sxk97u, sxk97v — 5 yılda 1'er saatlik veri
 
 
 ## Yararlandığımız kaynaklar:

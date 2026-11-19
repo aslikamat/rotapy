@@ -9,7 +9,7 @@ DB şemasıyla uyumlu sütun yapısı:
 Birleştirme anahtarı: geohash + date_hour
 
 Çalıştırma sırası:
-  1. python gecmis_trafik_ibb.py --quick
+  1. python gecmis_trafik_ibb_speed.py --quick
   2. python gecmis_etkinlik_scraper.py --start 2023-01-01 --end 2024-12-31
   3. python gecmis_hava_durumu.py --start 2023-01-01 --end 2024-12-31
   4. python birlestirme.py
@@ -157,7 +157,7 @@ def load_trafik(path: str) -> pd.DataFrame:
     if not Path(path).exists():
         raise FileNotFoundError(
             f"{path} bulunamadı.\n"
-            f"Önce çalıştırın: python gecmis_trafik_ibb.py --quick"
+            f"Önce çalıştırın: python gecmis_trafik_ibb_speed.py --quick"
         )
 
     df = pd.read_parquet(path)
