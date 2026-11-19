@@ -69,10 +69,14 @@ GROUP_COL = "geohash"
 # 6 saat: rota önerisi için yeterli, 24 gereksiz uzun
 SEQUENCE_LEN = 6
 
-# Train / Validation / Test — ZAMANA GÖRE SIRALI (rastgele değil)
-TRAIN_RATIO = 0.70
-VAL_RATIO   = 0.15
-# TEST_RATIO = 0.15 (kalan)
+# Train / Validation / Test — HEDEF SAATİN TARİHİNE GÖRE (rastgele değil)
+# Her kümede tüm hücreler bulunur; test gerçekten "gelecek" olur.
+# 2023-07-01 aynı zamanda trafik verisinde serbest akış hızının hesaplandığı
+# referans döneminin sonu (trafik_kalite.json → freeflow_referans_sonu), yani
+# hedef değişkenin tanımı da val/test dönemini görmemiş olur.
+TRAIN_END = "2023-07-01"   # t <  TRAIN_END            → train  (~%70)
+VAL_END   = "2024-04-01"   # TRAIN_END <= t < VAL_END  → val    (~%14)
+                           # VAL_END <= t              → test   (~%16)
 
 
 # =============================================================================
@@ -127,18 +131,25 @@ def load_and_prepare(path: str) -> pd.DataFrame:
 # 2. SEQUENCE OLUŞTUR
 # =============================================================================
 
-def create_sequences(df: pd.DataFrame, scaler_X: MinMaxScaler,
-                     scaler_y: MinMaxScaler, fit_scalers: bool = True) -> tuple:
+def create_sequences(df: pd.DataFrame) -> tuple:
     """
-    LSTM için (X, y) sequence çiftleri oluşturur.
+    LSTM için (X, y, t) üçlüleri oluşturur. Ölçekleme YAPMAZ — ölçekleyiciler
+    bölmeden sonra sadece train kümesine uydurulur (scale_sets).
 
     Gruplama: geohash — farklı lokasyonların sequence'ları karışmaz.
     Her X : son SEQUENCE_LEN saatin feature'ları  (6 saat, 21 feature)
     Her y : bir sonraki saatin congestion_ratio    (0-1 arası)
+    Her t : y'nin saati — train/val/test bölmesi bu tarihe göre yapılır
+
+    Veride saat boşlukları var (eksik saatler/aylar). Pencere + hedef
+    ARDIŞIK saatler değilse (hedef saat − ilk saat ≠ SEQUENCE_LEN saat)
+    o örnek atlanır; böylece her pencere gerçekten kesintisiz 6 saattir.
     """
     print(f"\n[2/5] Sequence oluşturuluyor (pencere: {SEQUENCE_LEN} saat)...")
 
-    X_all, y_all = [], []
+    X_all, y_all, t_all = [], [], []
+    atlanan = 0
+    beklenen = np.timedelta64(SEQUENCE_LEN, "h")
 
     groups = df[GROUP_COL].unique() if GROUP_COL in df.columns else ["_all"]
 # Group column = geohash olacak bu durumda
@@ -151,10 +162,17 @@ def create_sequences(df: pd.DataFrame, scaler_X: MinMaxScaler,
         loc_df   = loc_df.sort_values("datetime")
         features = loc_df[FEATURE_COLS].values.astype(np.float32)
         targets  = loc_df[TARGET_COL].values.astype(np.float32)
+        times    = loc_df["datetime"].values
 
         for i in range(SEQUENCE_LEN, len(loc_df)):
+            # Saatler hücre içinde benzersiz ve sıralı → aralık tam 6 saatse
+            # aradaki tüm saatler de ardışıktır
+            if times[i] - times[i - SEQUENCE_LEN] != beklenen:
+                atlanan += 1
+                continue
             X_all.append(features[i - SEQUENCE_LEN:i])
             y_all.append(targets[i])
+            t_all.append(times[i])
 
     if not X_all:
         raise ValueError(
@@ -164,53 +182,76 @@ def create_sequences(df: pd.DataFrame, scaler_X: MinMaxScaler,
 
     X = np.array(X_all, dtype=np.float32)
     y = np.array(y_all, dtype=np.float32).reshape(-1, 1)
+    t = np.array(t_all, dtype="datetime64[ns]")
 
+    toplam = len(X) + atlanan
     print(f"  X shape : {X.shape}  (örnekler, zaman_adımı, feature)")
     print(f"  y shape : {y.shape}")
     print(f"  y aralık: {y.min():.3f} — {y.max():.3f}  (congestion_ratio)")
+    print(f"  Boşluklu pencere atlandı: {atlanan:,} / {toplam:,} "
+          f"(%{atlanan / max(toplam, 1) * 100:.1f})")
 
-    X_2d = X.reshape(-1, X.shape[-1])
-    if fit_scalers:
-        X_scaled = scaler_X.fit_transform(X_2d)
-        y_scaled = scaler_y.fit_transform(y)
-    else:
-        X_scaled = scaler_X.transform(X_2d)
-        y_scaled = scaler_y.transform(y)
-
-    X_scaled = X_scaled.reshape(X.shape)
-    return X_scaled, y_scaled
+    return X, y, t
 
 
 # =============================================================================
 # 3. TRAIN / VAL / TEST AYIR — ZAMANA GÖRE SIRALI
 # =============================================================================
 
-def split_data(X: np.ndarray, y: np.ndarray) -> tuple:
+def split_data(X: np.ndarray, y: np.ndarray, t: np.ndarray) -> tuple:
     """
-    Veriyi zamana göre sıralı üçe böler — rastgele DEĞİL.
+    Veriyi HEDEF SAATİN TARİHİNE göre üçe böler — rastgele DEĞİL.
 
-    Neden sıralı?
-      Model geçmişten geleceği tahmin ediyor.
-      Rastgele bölünürse model gelecekten öğrenmiş olur — gerçekçi değil.
+    Neden tarihe göre?
+      Model geçmişten geleceği tahmin ediyor. Örnekler hücre hücre dizildiği
+      için liste sırasıyla kesmek hücreleri bölerdi (test = son hücreler);
+      tarih sınırıyla kesince her kümede tüm hücreler, test'te sadece gelecek olur.
 
-    Train  %70 → model bunlardan öğrenir
-    Val    %15 → her epoch sonunda kontrol, EarlyStopping buraya bakar
-    Test   %15 → model hiç görmedi, gerçek MAE buradan hesaplanır
+    Train  t <  TRAIN_END            → model bunlardan öğrenir
+    Val    TRAIN_END <= t < VAL_END  → her epoch sonunda kontrol, EarlyStopping
+    Test   VAL_END <= t              → model hiç görmedi, gerçek MAE buradan
     """
-    n       = len(X)
-    n_train = int(n * TRAIN_RATIO)
-    n_val   = int(n * VAL_RATIO)
+    tr = t <  np.datetime64(TRAIN_END)
+    va = (t >= np.datetime64(TRAIN_END)) & (t < np.datetime64(VAL_END))
+    te = t >= np.datetime64(VAL_END)
 
-    X_train, y_train = X[:n_train],                y[:n_train]
-    X_val,   y_val   = X[n_train:n_train + n_val], y[n_train:n_train + n_val]
-    X_test,  y_test  = X[n_train + n_val:],        y[n_train + n_val:]
+    X_train, y_train = X[tr], y[tr]
+    X_val,   y_val   = X[va], y[va]
+    X_test,  y_test  = X[te], y[te]
 
-    print(f"\n[3/5] Veri bölündü (zamana göre sıralı):")
-    print(f"  Train : {len(X_train):,} örnek  (%{TRAIN_RATIO*100:.0f})")
-    print(f"  Val   : {len(X_val):,} örnek  (%{VAL_RATIO*100:.0f})")
-    print(f"  Test  : {len(X_test):,} örnek  (%{(1-TRAIN_RATIO-VAL_RATIO)*100:.0f})")
+    print(f"\n[3/5] Veri bölündü (hedef saatin tarihine göre):")
+    for ad, m in [("Train", tr), ("Val", va), ("Test", te)]:
+        if m.any():
+            aralik = f"{str(t[m].min())[:10]} → {str(t[m].max())[:10]}"
+        else:
+            aralik = "BOŞ"
+        print(f"  {ad:<5} : {int(m.sum()):>9,} örnek  (%{m.mean()*100:4.1f})  {aralik}")
+    if not (tr.any() and va.any() and te.any()):
+        raise ValueError(f"Boş küme var — TRAIN_END={TRAIN_END}, VAL_END={VAL_END} "
+                         f"veri aralığına uymuyor.")
 
     return X_train, y_train, X_val, y_val, X_test, y_test
+
+
+def scale_sets(X_train, y_train, X_val, y_val, X_test, y_test,
+               scaler_X: MinMaxScaler, scaler_y: MinMaxScaler) -> tuple:
+    """
+    Ölçekleyicileri SADECE train kümesine uydurur, üç kümeyi de dönüştürür.
+    Val/test'te train aralığı dışındaki değerler 0'ın altına / 1'in üstüne
+    düşebilir — canlı sistemde de böyle olacağı için doğru davranış budur.
+    """
+    n_f = X_train.shape[-1]
+    scaler_X.fit(X_train.reshape(-1, n_f))
+    scaler_y.fit(y_train)
+
+    def sx(X):
+        return scaler_X.transform(X.reshape(-1, n_f)).reshape(X.shape).astype(np.float32)
+
+    def sy(y):
+        return scaler_y.transform(y).astype(np.float32)
+
+    print(f"  Ölçekleyiciler sadece train kümesine uyduruldu")
+    return sx(X_train), sy(y_train), sx(X_val), sy(y_val), sx(X_test), sy(y_test)
 
 
 # =============================================================================
@@ -441,11 +482,13 @@ def main():
     scaler_X = MinMaxScaler()
     scaler_y = MinMaxScaler()
 
-    # 3. Sequence
-    X, y = create_sequences(df, scaler_X, scaler_y, fit_scalers=True)
+    # 3. Sequence (ölçeklenmemiş) + her örneğin hedef saati
+    X, y, t = create_sequences(df)
 
-    # 4. Böl
-    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y)
+    # 4. Tarihe göre böl, SONRA ölçekle (ölçekleyiciler sadece train'i görür)
+    X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y, t)
+    X_train, y_train, X_val, y_val, X_test, y_test = scale_sets(
+        X_train, y_train, X_val, y_val, X_test, y_test, scaler_X, scaler_y)
 
     # 5. Model
     model = build_model(input_shape=(SEQUENCE_LEN, len(FEATURE_COLS)))
