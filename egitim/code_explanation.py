@@ -490,5 +490,6 @@ print("""
 → shuffle=True: her epoch başında pencerelerin SIRASI karışır, pencerelerin
   İÇİNDEKİ 6 saatin sırası değişmez.""")
 
-print("\n\n[TAMAMLANDI] Not: Model eğitilmediği için ağırlıklar rastgele; sayısal değerler")
-print("anlamsız, ama boyutlar ve hesap akışı eğitilmiş modelde de birebir aynı.")
+print("\n\n[TAMAMLANDI] Not: Bu script kayıtlı (eğitilmiş) modeli YÜKLEMEZ; build_model() ile")
+print("yeni kurulan modelin ağırlıkları rastgele ve veri sahte, bu yüzden sayısal değerler")
+print("anlamsız. Boyutlar ve hesap akışı eğitilmiş modelde de birebir aynı.")
